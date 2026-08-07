@@ -8,10 +8,10 @@ const CELL_SIZE = 160;
 interface Props {
   samples: Sample[];
   selected: Set<number>;
-  onToggle: (id: number) => void;
+  onSelect: (id: number, index: number, shiftKey: boolean) => void;
 }
 
-export default function ImageGrid({ samples, selected, onToggle }: Props) {
+export default function ImageGrid({ samples, selected, onSelect }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
 
@@ -38,7 +38,7 @@ export default function ImageGrid({ samples, selected, onToggle }: Props) {
           rowHeight={CELL_SIZE}
           width={size.width}
           height={size.height}
-          itemData={{ samples, columnCount, selected, onToggle }}
+          itemData={{ samples, columnCount, selected, onSelect }}
         >
           {GridCell}
         </FixedSizeGrid>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api/client";
 import CommitHistory from "./components/CommitHistory";
 import ImageGrid from "./components/ImageGrid";
@@ -9,7 +9,16 @@ import type { Commit, IndexStatus, TagOp } from "./types";
 
 export default function App() {
   const { samples, loading, reload, applyTagsLocally } = useSamples();
-  const { selected, toggle, clear } = useSelection();
+  const { selected, toggle, selectRange, selectAll, clear } = useSelection();
+  const sampleIds = useMemo(() => samples.map((s) => s.id), [samples]);
+
+  const handleSelect = useCallback(
+    (id: number, index: number, shiftKey: boolean) => {
+      if (shiftKey) selectRange(sampleIds, index);
+      else toggle(id, index);
+    },
+    [sampleIds, selectRange, toggle],
+  );
 
   const [folderPath, setFolderPath] = useState("");
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
@@ -75,13 +84,15 @@ export default function App() {
 
       <Toolbar
         selectedCount={selected.size}
+        totalCount={samples.length}
         onApplyTag={(tag) => applyTag(tag, "add")}
         onRemoveTag={(tag) => applyTag(tag, "remove")}
+        onSelectAll={() => selectAll(sampleIds)}
         onClearSelection={clear}
       />
 
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <ImageGrid samples={samples} selected={selected} onToggle={toggle} />
+        <ImageGrid samples={samples} selected={selected} onSelect={handleSelect} />
         <CommitHistory commits={commits} onUndo={handleUndo} />
       </div>
     </div>

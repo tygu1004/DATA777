@@ -6,7 +6,7 @@ export interface CellData {
   samples: Sample[];
   columnCount: number;
   selected: Set<number>;
-  onToggle: (id: number) => void;
+  onSelect: (id: number, index: number, shiftKey: boolean) => void;
 }
 
 interface Props {
@@ -19,7 +19,7 @@ interface Props {
 const THUMB_SIZE = 144;
 
 export default function GridCell({ columnIndex, rowIndex, style, data }: Props) {
-  const { samples, columnCount, selected, onToggle } = data;
+  const { samples, columnCount, selected, onSelect } = data;
   const index = rowIndex * columnCount + columnIndex;
   const sample = samples[index];
   if (!sample) return <div style={style} />;
@@ -29,7 +29,7 @@ export default function GridCell({ columnIndex, rowIndex, style, data }: Props) 
   return (
     <div style={{ ...style, padding: 8, boxSizing: "border-box" }}>
       <div
-        onClick={() => onToggle(sample.id)}
+        onClick={(e) => onSelect(sample.id, index, e.shiftKey)}
         title={sample.filename}
         style={{
           width: THUMB_SIZE,
@@ -39,6 +39,7 @@ export default function GridCell({ columnIndex, rowIndex, style, data }: Props) 
           overflow: "hidden",
           cursor: "pointer",
           position: "relative",
+          userSelect: "none", // shift-click for range selection would otherwise also text-select the page
         }}
       >
         <img

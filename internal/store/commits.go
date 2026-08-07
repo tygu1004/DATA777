@@ -200,6 +200,10 @@ func (db *DB) getCommit(id int64) (*Commit, error) {
 	return &c, nil
 }
 
+// ListCommits returns commits reachable from HEAD by walking parent_id — i.e. the active
+// history, not every commit row ever created. A commit that's been undone past (HEAD moved
+// to its parent) drops out of this list even though its row still exists in the table, so
+// the visible history actually shrinks on undo instead of just re-labeling which row is HEAD.
 func (db *DB) ListCommits(offset, limit int) ([]Commit, error) {
 	head, err := db.GetHead()
 	if err != nil {
@@ -207,9 +211,16 @@ func (db *DB) ListCommits(offset, limit int) ([]Commit, error) {
 	}
 
 	rows, err := db.Query(
-		`SELECT c.id, c.parent_id, c.message, c.created_at, COUNT(o.id)
-		 FROM commits c LEFT JOIN commit_ops o ON o.commit_id = c.id
-		 GROUP BY c.id ORDER BY c.id DESC LIMIT ? OFFSET ?`,
+		`WITH RECURSIVE chain(id, parent_id, message, created_at) AS (
+			SELECT c.id, c.parent_id, c.message, c.created_at
+			FROM commits c JOIN head h ON c.id = h.commit_id
+			UNION ALL
+			SELECT c.id, c.parent_id, c.message, c.created_at
+			FROM commits c JOIN chain ON c.id = chain.parent_id
+		 )
+		 SELECT chain.id, chain.parent_id, chain.message, chain.created_at, COUNT(o.id)
+		 FROM chain LEFT JOIN commit_ops o ON o.commit_id = chain.id
+		 GROUP BY chain.id ORDER BY chain.id DESC LIMIT ? OFFSET ?`,
 		limit, offset,
 	)
 	if err != nil {

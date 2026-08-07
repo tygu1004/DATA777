@@ -2,12 +2,21 @@ import { useState } from "react";
 
 interface Props {
   selectedCount: number;
+  totalCount: number;
   onApplyTag: (tag: string) => void;
   onRemoveTag: (tag: string) => void;
+  onSelectAll: () => void;
   onClearSelection: () => void;
 }
 
-export default function Toolbar({ selectedCount, onApplyTag, onRemoveTag, onClearSelection }: Props) {
+export default function Toolbar({
+  selectedCount,
+  totalCount,
+  onApplyTag,
+  onRemoveTag,
+  onSelectAll,
+  onClearSelection,
+}: Props) {
   const [tag, setTag] = useState("");
 
   const submit = (apply: (tag: string) => void) => {
@@ -20,6 +29,10 @@ export default function Toolbar({ selectedCount, onApplyTag, onRemoveTag, onClea
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #ddd" }}>
       <span>{selectedCount} selected</span>
+      <span style={{ fontSize: 12, color: "#999" }}>(shift-click for a range)</span>
+      <button disabled={totalCount === 0 || selectedCount === totalCount} onClick={onSelectAll}>
+        Select all ({totalCount})
+      </button>
       <input
         value={tag}
         onChange={(e) => setTag(e.target.value)}

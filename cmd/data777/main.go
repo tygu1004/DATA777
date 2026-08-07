@@ -23,7 +23,7 @@ func main() {
 	storageBackend := flag.String("storage", "local", "where source images live: local or s3")
 	s3Bucket := flag.String("s3-bucket", "", "s3 bucket name (storage=s3)")
 	s3Region := flag.String("s3-region", "us-east-1", "s3 region (storage=s3)")
-	s3Endpoint := flag.String("s3-endpoint", "", "custom s3 endpoint, e.g. http://localhost:9000 for MinIO (storage=s3)")
+	s3Endpoint := flag.String("s3-endpoint", "", "custom s3 endpoint, e.g. http://localhost:9000 for RustFS/MinIO (storage=s3)")
 	s3PathStyle := flag.Bool("s3-path-style", true, "use path-style bucket addressing, required by most self-hosted s3-compatible servers (storage=s3)")
 	flag.Parse()
 

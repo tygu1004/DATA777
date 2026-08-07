@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// S3 reads objects from any S3-compatible bucket (AWS S3, MinIO, GCS interop, R2, ...).
+// S3 reads objects from any S3-compatible bucket (AWS S3, RustFS, MinIO, GCS interop, R2, ...).
 // Credentials are resolved through the standard AWS SDK chain (env vars, shared config,
 // IAM role), so no credential flags are needed here.
 type S3 struct {
@@ -22,8 +22,8 @@ type S3 struct {
 type S3Config struct {
 	Bucket    string
 	Region    string
-	Endpoint  string // non-AWS endpoint, e.g. http://localhost:9000 for MinIO; empty uses real AWS S3
-	PathStyle bool   // required by most self-hosted S3-compatible servers (MinIO defaults to this)
+	Endpoint  string // non-AWS endpoint, e.g. http://localhost:9000 for RustFS/MinIO; empty uses real AWS S3
+	PathStyle bool   // required by most self-hosted S3-compatible servers (RustFS/MinIO default to this)
 }
 
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {

@@ -62,14 +62,14 @@ export default function App() {
         <input
           value={folderPath}
           onChange={(e) => setFolderPath(e.target.value)}
-          placeholder="/절대/경로/이미지폴더"
+          placeholder="/absolute/path/to/image/folder"
           style={{ flex: 1, padding: 4 }}
         />
-        <button onClick={startIndex}>인덱싱 시작</button>
+        <button onClick={startIndex}>Start indexing</button>
         <span style={{ fontSize: 13, color: "#666" }}>
-          {indexStatus ? `${indexStatus.status} (${indexStatus.processed}장)` : ""}
-          {loading ? " · 샘플 로딩 중..." : ""}
-          {` · 총 ${samples.length}장`}
+          {indexStatus ? `${indexStatus.status} (${indexStatus.processed} indexed)` : ""}
+          {loading ? " · loading samples..." : ""}
+          {` · ${samples.length} total`}
         </span>
       </div>
 

@@ -19,22 +19,22 @@ export default function Toolbar({ selectedCount, onApplyTag, onRemoveTag, onClea
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #ddd" }}>
-      <span>{selectedCount}개 선택됨</span>
+      <span>{selectedCount} selected</span>
       <input
         value={tag}
         onChange={(e) => setTag(e.target.value)}
-        placeholder="태그 입력"
+        placeholder="Enter a tag"
         onKeyDown={(e) => e.key === "Enter" && submit(onApplyTag)}
         style={{ padding: 4 }}
       />
       <button disabled={selectedCount === 0 || !tag.trim()} onClick={() => submit(onApplyTag)}>
-        태그 추가
+        Add tag
       </button>
       <button disabled={selectedCount === 0 || !tag.trim()} onClick={() => submit(onRemoveTag)}>
-        태그 제거
+        Remove tag
       </button>
       <button disabled={selectedCount === 0} onClick={onClearSelection}>
-        선택 해제
+        Clear selection
       </button>
     </div>
   );

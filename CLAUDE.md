@@ -131,3 +131,15 @@ Casbin/OPA + oauth2-proxy + Docker Compose/Helm 조합으로 정리했음.
 ## 진행 상황 로그
 
 - 2026-08-07: API 서버 언어를 Go로 확정. 이유는 위 "기술 스택" 섹션 참고.
+- 2026-08-07: MVP v0 스캐폴딩 완료, 첫 git 커밋(`71ef225`). Go(stdlib net/http,
+  modernc.org/sqlite) + React/Vite(react-window 가상화 그리드) + go:embed 단일 바이너리.
+  로컬 폴더 인덱싱 → 썸네일 그리드 → 태그 커밋 → undo → 재시작 후 영속성까지 curl로
+  end-to-end 검증 완료 (브라우저 자동화 도구가 없어 실제 화면 스크린샷 확인은 못 함 —
+  다음 세션에서 `make build && ./data777 --data-dir ./devdata`로 직접 열어서 확인 필요).
+  상세 설계는 `/home/jdj/.claude/plans/vast-meandering-boot.md` 참고.
+  - 개발 환경: 이 WSL 머신엔 Go/Node가 기본 설치돼 있지 않았음. Go는 sudo 없이
+    `$HOME/.local/go`에 공식 tarball로, Node는 nvm(`$HOME/.nvm`)으로 설치함. `~/.profile`에
+    PATH가 추가돼 있어 새 로그인 세션에서는 자동으로 잡히지만, Claude Code의 Bash 도구는
+    비대화형 쉘이라 `~/.bashrc`를 못 읽는 이슈가 있었음 — 이후 세션에서 `go`/`node`가
+    안 잡히면 `export PATH="$HOME/.local/go/bin:$HOME/go/bin:$HOME/.nvm/versions/node/*/bin:$PATH"`
+    를 먼저 실행할 것.

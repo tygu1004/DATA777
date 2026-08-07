@@ -3,16 +3,17 @@ import type { Commit } from "../types";
 interface Props {
   commits: Commit[];
   onUndo: () => void;
+  undoing: boolean;
 }
 
-export default function CommitHistory({ commits, onUndo }: Props) {
+export default function CommitHistory({ commits, onUndo, undoing }: Props) {
   const head = commits.find((c) => c.is_head);
 
   return (
     <div style={{ width: 260, borderLeft: "1px solid #ddd", padding: 12, overflowY: "auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <strong>Commit history</strong>
-        <button disabled={!head} onClick={onUndo}>
+        <button disabled={!head || undoing} onClick={onUndo}>
           Undo
         </button>
       </div>

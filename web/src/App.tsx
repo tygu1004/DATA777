@@ -29,7 +29,7 @@ export default function App() {
 
   const reloadCommits = useCallback(async () => {
     const res = await api.listCommits();
-    setCommits(res.items);
+    setCommits(res.items ?? []);
   }, []);
 
   useEffect(() => {
@@ -61,10 +61,19 @@ export default function App() {
     [selected, applyTagsLocally, reloadCommits],
   );
 
+  const [undoing, setUndoing] = useState(false);
   const handleUndo = useCallback(async () => {
-    await api.undo();
-    await Promise.all([reload(), reloadCommits()]);
-  }, [reload, reloadCommits]);
+    if (undoing) return;
+    setUndoing(true);
+    try {
+      await api.undo();
+      await Promise.all([reload(), reloadCommits()]);
+    } catch {
+      await reloadCommits();
+    } finally {
+      setUndoing(false);
+    }
+  }, [undoing, reload, reloadCommits]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -95,7 +104,7 @@ export default function App() {
 
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <ImageGrid samples={samples} selected={selected} onSelect={handleSelect} onOpenPreview={setPreviewIndex} />
-        <CommitHistory commits={commits} onUndo={handleUndo} />
+        <CommitHistory commits={commits} onUndo={handleUndo} undoing={undoing} />
       </div>
 
       {previewIndex !== null && (

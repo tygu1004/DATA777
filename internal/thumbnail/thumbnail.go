@@ -20,23 +20,18 @@ const (
 	previewSize = 1600 // lightbox preview, longest edge
 )
 
-// Generator produces and disk-caches a single resized JPEG variant per sample. The grid needs
-// uniform square cells (letterboxed); the lightbox preview needs a large, undistorted,
-// non-upscaled image for actually judging quality — same decode/cache machinery, different
-// resize policy, so both are just different Generator configurations.
+// Generator resizes and disk-caches one JPEG variant per sample; grid vs. preview are just
+// different edge/letterbox configurations of the same type.
 type Generator struct {
 	cacheDir  string
 	edge      int
 	letterbox bool
 }
 
-// New returns a generator for fixed-size square grid thumbnails.
 func New(cacheDir string) (*Generator, error) {
 	return newGenerator(cacheDir, gridSize, true)
 }
 
-// NewPreview returns a generator for large lightbox previews (aspect-preserving, never
-// upscaled past the source resolution).
 func NewPreview(cacheDir string) (*Generator, error) {
 	return newGenerator(cacheDir, previewSize, false)
 }
@@ -48,8 +43,6 @@ func newGenerator(cacheDir string, edge int, letterbox bool) (*Generator, error)
 	return &Generator{cacheDir: cacheDir, edge: edge, letterbox: letterbox}, nil
 }
 
-// GetOrGenerate returns the path to this generator's cached JPEG variant for the sample,
-// generating and caching it on disk on first request.
 func (g *Generator) GetOrGenerate(sampleID int64, srcPath string) (string, error) {
 	outPath := filepath.Join(g.cacheDir, fmt.Sprintf("%d.jpg", sampleID))
 	if _, err := os.Stat(outPath); err == nil {
@@ -95,9 +88,7 @@ func (g *Generator) GetOrGenerate(sampleID int64, srcPath string) (string, error
 	return outPath, nil
 }
 
-// scaleToFit scales img down to fit within edge x edge (preserving aspect ratio), never
-// upscaling past its original resolution — upscaling would make a low-res source look sharper
-// than it is, which is actively misleading for a preview meant to judge image quality.
+// scaleToFit never upscales — a preview meant to judge image quality shouldn't fake sharpness.
 func scaleToFit(img image.Image, edge int) image.Image {
 	b := img.Bounds()
 	srcW, srcH := b.Dx(), b.Dy()
@@ -121,9 +112,7 @@ func scaleToFit(img image.Image, edge int) image.Image {
 	return scaled
 }
 
-// letterbox scales img to fit within an edge x edge square (preserving aspect ratio) and
-// centers it on a white canvas, so every thumbnail has identical dimensions — this is what
-// lets the frontend grid use a fixed-size virtualizer instead of variable-height layout.
+// letterbox centers img on a white edge x edge canvas so every thumbnail is the same size.
 func letterbox(img image.Image, edge int) image.Image {
 	b := img.Bounds()
 	srcW, srcH := b.Dx(), b.Dy()

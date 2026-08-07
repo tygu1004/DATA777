@@ -46,7 +46,7 @@ func (db *DB) ListSamples(offset, limit int) ([]Sample, error) {
 	}
 	defer rows.Close()
 
-	var samples []Sample
+	samples := []Sample{} // never nil: encoding/json renders a nil slice as `null`, not `[]`
 	ids := make([]int64, 0, limit)
 	for rows.Next() {
 		var s Sample

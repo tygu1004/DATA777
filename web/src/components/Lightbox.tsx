@@ -1,10 +1,8 @@
 import ReactLightbox from "yet-another-react-lightbox";
 import Captions from "yet-another-react-lightbox/plugins/captions";
-import Counter from "yet-another-react-lightbox/plugins/counter";
 import Zoom from "yet-another-react-lightbox/plugins/zoom";
 import "yet-another-react-lightbox/styles.css";
 import "yet-another-react-lightbox/plugins/captions.css";
-import "yet-another-react-lightbox/plugins/counter.css";
 import { previewUrl } from "../api/client";
 import type { Sample } from "../types";
 
@@ -22,15 +20,15 @@ export default function Lightbox({ samples, index, onClose, onNavigate }: Props)
       close={onClose}
       index={index}
       on={{ view: ({ index: i }) => onNavigate(i) }}
-      slides={samples.map((s) => ({
+      slides={samples.map((s, i) => ({
         src: previewUrl(s.id),
         width: s.width,
         height: s.height,
         alt: s.filename,
-        title: s.filename,
+        title: `${s.filename} · ${i + 1} / ${samples.length}`,
         description: s.tags.length > 0 ? s.tags.join(", ") : undefined,
       }))}
-      plugins={[Zoom, Counter, Captions]}
+      plugins={[Zoom, Captions]}
       zoom={{ maxZoomPixelRatio: 4 }}
     />
   );

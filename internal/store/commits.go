@@ -200,10 +200,8 @@ func (db *DB) getCommit(id int64) (*Commit, error) {
 	return &c, nil
 }
 
-// ListCommits returns commits reachable from HEAD by walking parent_id — i.e. the active
-// history, not every commit row ever created. A commit that's been undone past (HEAD moved
-// to its parent) drops out of this list even though its row still exists in the table, so
-// the visible history actually shrinks on undo instead of just re-labeling which row is HEAD.
+// ListCommits walks parent_id from HEAD, so undone commits (still in the table, just
+// unreachable from HEAD) drop out of the list instead of only losing the is_head flag.
 func (db *DB) ListCommits(offset, limit int) ([]Commit, error) {
 	head, err := db.GetHead()
 	if err != nil {
@@ -228,7 +226,7 @@ func (db *DB) ListCommits(offset, limit int) ([]Commit, error) {
 	}
 	defer rows.Close()
 
-	var commits []Commit
+	commits := []Commit{} // never nil: encoding/json renders a nil slice as `null`, not `[]`
 	for rows.Next() {
 		var c Commit
 		var parentID sql.NullInt64

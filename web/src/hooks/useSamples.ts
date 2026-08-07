@@ -12,14 +12,14 @@ export function useSamples() {
     setLoading(true);
     try {
       const first = await listSamples(0, PAGE_SIZE);
-      let items = first.items;
+      let items = first.items ?? [];
 
       const pageOffsets: number[] = [];
       for (let offset = items.length; offset < first.total; offset += PAGE_SIZE) {
         pageOffsets.push(offset);
       }
       const pages = await Promise.all(pageOffsets.map((offset) => listSamples(offset, PAGE_SIZE)));
-      for (const page of pages) items = items.concat(page.items);
+      for (const page of pages) items = items.concat(page.items ?? []);
 
       setSamples(items);
     } finally {
@@ -31,8 +31,6 @@ export function useSamples() {
     reload();
   }, [reload]);
 
-  // Optimistically applies just-committed tag ops to local state so the grid updates
-  // instantly instead of waiting on a full refetch.
   const applyTagsLocally = useCallback((ops: TagOp[]) => {
     setSamples((prev) =>
       prev.map((sample) => {

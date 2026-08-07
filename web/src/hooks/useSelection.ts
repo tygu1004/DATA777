@@ -14,8 +14,6 @@ export function useSelection() {
     });
   }, []);
 
-  // Adds every id between the last plain click ("anchor") and the shift-clicked index to the
-  // current selection, matching the usual file-manager shift-click convention.
   const selectRange = useCallback((orderedIds: number[], index: number) => {
     const anchor = anchorIndexRef.current ?? index;
     const [start, end] = anchor <= index ? [anchor, index] : [index, anchor];

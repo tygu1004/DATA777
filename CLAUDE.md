@@ -143,3 +143,18 @@ Casbin/OPA + oauth2-proxy + Docker Compose/Helm 조합으로 정리했음.
     비대화형 쉘이라 `~/.bashrc`를 못 읽는 이슈가 있었음 — 이후 세션에서 `go`/`node`가
     안 잡히면 `export PATH="$HOME/.local/go/bin:$HOME/go/bin:$HOME/.nvm/versions/node/*/bin:$PATH"`
     를 먼저 실행할 것.
+- 2026-08-07: 사용자 실사용 피드백으로 버그 두 개 수정.
+  1. undo해도 커밋 히스토리가 안 바뀌어 보이던 문제 — `ListCommits`이 전체 커밋을 나열하던
+     걸 HEAD에서 parent_id를 따라가는 체인만 보여주도록 변경. shift+클릭 범위선택,
+     전체선택 버튼도 함께 추가 (`5d37312`).
+  2. 확대 프리뷰(라이트박스, 줌 포함) 추가 — `yet-another-react-lightbox` +
+     `react-virtualized-auto-sizer` 사용, 직접 구현하지 않음 (`5ead2ef`).
+  3. **undo를 커밋이 0개가 될 때까지 누르면 화면이 통째로 사라지는 크래시** 발견·수정
+     (`7f007e6`). 원인: Go `encoding/json`이 빈 슬라이스를 `null`로 직렬화하는데
+     프론트가 `commits.find()`를 그대로 호출해 렌더 중 예외 발생 → ErrorBoundary가
+     없어서 전체 트리가 unmount됨. 백엔드는 빈 리스트를 항상 `[]`로 반환하도록 고치고,
+     프론트에도 방어 코드 + 루트 ErrorBoundary 추가.
+  - **브라우저 자동화 확보**: Playwright(Python, `pip3 install --user`)로 헤드리스
+    Chromium 설치 완료 — 위 3번 버그를 이걸로 실제 재현·검증함. 프로젝트 의존성에는
+    안 넣었고 테스트 전용. 앞으로 프론트 변경은 curl만으로 끝내지 말고 이걸로
+    실제 화면을 찍어서 확인할 것.

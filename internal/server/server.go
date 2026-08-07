@@ -11,13 +11,14 @@ import (
 )
 
 type Server struct {
-	db     *store.DB
-	idx    *indexer.Indexer
-	thumbs *thumbnail.Generator
+	db       *store.DB
+	idx      *indexer.Indexer
+	thumbs   *thumbnail.Generator
+	previews *thumbnail.Generator
 }
 
-func New(db *store.DB, idx *indexer.Indexer, thumbs *thumbnail.Generator) *Server {
-	return &Server{db: db, idx: idx, thumbs: thumbs}
+func New(db *store.DB, idx *indexer.Indexer, thumbs, previews *thumbnail.Generator) *Server {
+	return &Server{db: db, idx: idx, thumbs: thumbs, previews: previews}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -27,6 +28,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/index/status", s.handleIndexStatus)
 	mux.HandleFunc("GET /api/samples", s.handleListSamples)
 	mux.HandleFunc("GET /api/thumbnails/{id}", s.handleThumbnail)
+	mux.HandleFunc("GET /api/previews/{id}", s.handlePreview)
 	mux.HandleFunc("POST /api/commits", s.handleCreateCommit)
 	mux.HandleFunc("GET /api/commits", s.handleListCommits)
 	mux.HandleFunc("POST /api/undo", s.handleUndo)

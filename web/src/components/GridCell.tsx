@@ -7,6 +7,7 @@ export interface CellData {
   columnCount: number;
   selected: Set<number>;
   onSelect: (id: number, index: number, shiftKey: boolean) => void;
+  onOpenPreview: (index: number) => void;
 }
 
 interface Props {
@@ -19,7 +20,7 @@ interface Props {
 const THUMB_SIZE = 144;
 
 export default function GridCell({ columnIndex, rowIndex, style, data }: Props) {
-  const { samples, columnCount, selected, onSelect } = data;
+  const { samples, columnCount, selected, onSelect, onOpenPreview } = data;
   const index = rowIndex * columnCount + columnIndex;
   const sample = samples[index];
   if (!sample) return <div style={style} />;
@@ -30,7 +31,8 @@ export default function GridCell({ columnIndex, rowIndex, style, data }: Props) 
     <div style={{ ...style, padding: 8, boxSizing: "border-box" }}>
       <div
         onClick={(e) => onSelect(sample.id, index, e.shiftKey)}
-        title={sample.filename}
+        onDoubleClick={() => onOpenPreview(index)}
+        title={`${sample.filename} (double-click to preview)`}
         style={{
           width: THUMB_SIZE,
           height: THUMB_SIZE,

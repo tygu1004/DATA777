@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"data777/internal/store"
+	"data777/internal/thumbnail"
 )
 
 type listSamplesResponse struct {
@@ -30,6 +31,14 @@ func (s *Server) handleListSamples(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	s.serveGenerated(w, r, s.thumbs)
+}
+
+func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
+	s.serveGenerated(w, r, s.previews)
+}
+
+func (s *Server) serveGenerated(w http.ResponseWriter, r *http.Request, gen *thumbnail.Generator) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid sample id")
@@ -42,14 +51,14 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	thumbPath, err := s.thumbs.GetOrGenerate(id, srcPath)
+	path, err := gen.GetOrGenerate(id, srcPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	http.ServeFile(w, r, thumbPath)
+	http.ServeFile(w, r, path)
 }
 
 func parsePagination(r *http.Request, defaultLimit int) (offset, limit int) {

@@ -31,6 +31,10 @@ export function thumbnailUrl(id: number): string {
   return `/api/thumbnails/${id}`;
 }
 
+export function previewUrl(id: number): string {
+  return `/api/previews/${id}`;
+}
+
 export function createCommit(message: string, ops: TagOp[]): Promise<Commit> {
   return request("/api/commits", { method: "POST", body: JSON.stringify({ message, ops }) });
 }

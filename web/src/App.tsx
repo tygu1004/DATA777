@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api/client";
 import CommitHistory from "./components/CommitHistory";
 import ImageGrid from "./components/ImageGrid";
+import Lightbox from "./components/Lightbox";
 import Toolbar from "./components/Toolbar";
 import { useSamples } from "./hooks/useSamples";
 import { useSelection } from "./hooks/useSelection";
@@ -11,6 +12,7 @@ export default function App() {
   const { samples, loading, reload, applyTagsLocally } = useSamples();
   const { selected, toggle, selectRange, selectAll, clear } = useSelection();
   const sampleIds = useMemo(() => samples.map((s) => s.id), [samples]);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
   const handleSelect = useCallback(
     (id: number, index: number, shiftKey: boolean) => {
@@ -92,9 +94,18 @@ export default function App() {
       />
 
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <ImageGrid samples={samples} selected={selected} onSelect={handleSelect} />
+        <ImageGrid samples={samples} selected={selected} onSelect={handleSelect} onOpenPreview={setPreviewIndex} />
         <CommitHistory commits={commits} onUndo={handleUndo} />
       </div>
+
+      {previewIndex !== null && (
+        <Lightbox
+          samples={samples}
+          index={previewIndex}
+          onClose={() => setPreviewIndex(null)}
+          onNavigate={setPreviewIndex}
+        />
+      )}
     </div>
   );
 }

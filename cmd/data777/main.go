@@ -33,9 +33,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("init thumbnail cache: %v", err)
 	}
+	previews, err := thumbnail.NewPreview(filepath.Join(*dataDir, "previews"))
+	if err != nil {
+		log.Fatalf("init preview cache: %v", err)
+	}
 
 	idx := indexer.New(db)
-	srv := server.New(db, idx, thumbs)
+	srv := server.New(db, idx, thumbs, previews)
 
 	addr := fmt.Sprintf(":%d", *port)
 	log.Printf("data777 listening on %s (data dir: %s)", addr, *dataDir)

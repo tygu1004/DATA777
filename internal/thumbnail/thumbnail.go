@@ -1,6 +1,7 @@
 package thumbnail
 
 import (
+	"context"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -13,6 +14,8 @@ import (
 
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
+
+	"data777/internal/storage"
 )
 
 const (
@@ -24,32 +27,33 @@ const (
 // different edge/letterbox configurations of the same type.
 type Generator struct {
 	cacheDir  string
+	source    storage.Source
 	edge      int
 	letterbox bool
 }
 
-func New(cacheDir string) (*Generator, error) {
-	return newGenerator(cacheDir, gridSize, true)
+func New(cacheDir string, source storage.Source) (*Generator, error) {
+	return newGenerator(cacheDir, source, gridSize, true)
 }
 
-func NewPreview(cacheDir string) (*Generator, error) {
-	return newGenerator(cacheDir, previewSize, false)
+func NewPreview(cacheDir string, source storage.Source) (*Generator, error) {
+	return newGenerator(cacheDir, source, previewSize, false)
 }
 
-func newGenerator(cacheDir string, edge int, letterbox bool) (*Generator, error) {
+func newGenerator(cacheDir string, source storage.Source, edge int, letterbox bool) (*Generator, error) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create image cache dir: %w", err)
 	}
-	return &Generator{cacheDir: cacheDir, edge: edge, letterbox: letterbox}, nil
+	return &Generator{cacheDir: cacheDir, source: source, edge: edge, letterbox: letterbox}, nil
 }
 
-func (g *Generator) GetOrGenerate(sampleID int64, srcPath string) (string, error) {
+func (g *Generator) GetOrGenerate(ctx context.Context, sampleID int64, srcPath string) (string, error) {
 	outPath := filepath.Join(g.cacheDir, fmt.Sprintf("%d.jpg", sampleID))
 	if _, err := os.Stat(outPath); err == nil {
 		return outPath, nil
 	}
 
-	src, err := os.Open(srcPath)
+	src, err := g.source.Open(ctx, srcPath)
 	if err != nil {
 		return "", fmt.Errorf("open source image: %w", err)
 	}

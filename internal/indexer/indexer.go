@@ -1,12 +1,12 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +14,7 @@ import (
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
 
+	"data777/internal/storage"
 	"data777/internal/store"
 )
 
@@ -42,14 +43,15 @@ type Status struct {
 }
 
 type Indexer struct {
-	db *store.DB
+	db     *store.DB
+	source storage.Source
 
 	mu     sync.Mutex
 	status Status
 }
 
-func New(db *store.DB) *Indexer {
-	return &Indexer{db: db, status: Status{State: StateIdle}}
+func New(db *store.DB, source storage.Source) *Indexer {
+	return &Indexer{db: db, source: source, status: Status{State: StateIdle}}
 }
 
 func (idx *Indexer) Status() Status {
@@ -58,8 +60,8 @@ func (idx *Indexer) Status() Status {
 	return idx.status
 }
 
-// StartIndex walks the given folder in the background, recording every supported image as a
-// sample. Re-running against the same folder is a no-op for files already indexed (path is
+// StartIndex walks the given root in the background, recording every supported image as a
+// sample. Re-running against the same root is a no-op for files already indexed (path is
 // UNIQUE in the samples table).
 func (idx *Indexer) StartIndex(root string) error {
 	idx.mu.Lock()
@@ -75,30 +77,24 @@ func (idx *Indexer) StartIndex(root string) error {
 }
 
 func (idx *Indexer) run(root string) {
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
+	ctx := context.Background()
+	err := idx.source.Walk(ctx, root, func(path string, size int64) error {
 		format, ok := supportedExt[strings.ToLower(filepath.Ext(path))]
 		if !ok {
 			return nil
 		}
 
-		f, err := os.Open(path)
+		rc, err := idx.source.Open(ctx, path)
 		if err != nil {
 			return nil // skip unreadable file
 		}
-		cfg, _, err := image.DecodeConfig(f)
-		info, statErr := f.Stat()
-		f.Close()
-		if err != nil || statErr != nil {
+		cfg, _, err := image.DecodeConfig(rc)
+		rc.Close()
+		if err != nil {
 			return nil // skip undecodable file
 		}
 
-		if err := idx.db.InsertSample(path, filepath.Base(path), cfg.Width, cfg.Height, info.Size(), format); err != nil {
+		if err := idx.db.InsertSample(path, filepath.Base(path), cfg.Width, cfg.Height, size, format); err != nil {
 			return err
 		}
 

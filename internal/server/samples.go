@@ -51,7 +51,7 @@ func (s *Server) serveGenerated(w http.ResponseWriter, r *http.Request, gen *thu
 		return
 	}
 
-	path, err := gen.GetOrGenerate(id, srcPath)
+	path, err := gen.GetOrGenerate(r.Context(), id, srcPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

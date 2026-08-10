@@ -46,9 +46,18 @@ splits with it.
 | Sample metadata | Written once at index time, then large analytical scans, filters, counts | SQLite | > 10M samples | ClickHouse |
 | Commits, HEAD, sessions | Small, frequently mutated, must be exact | SQLite | Multiple API replicas | PostgreSQL |
 | Tag state | Set membership per tag | Roaring bitmaps (BLOB) | — | unchanged |
+| Label state | Typed objects (classification/detection/keypoints) per sample, edited a few at a time by a human reviewer | SQLite, alongside sample metadata | — | unchanged |
 
 Each layer sits behind an interface and is replaced independently. Application code and
 the HTTP API do not change when an implementation is swapped.
+
+Label state is not a fourth storage engine — it is closer in character to sample metadata
+(read far more than written) than to tag state (which is pure set membership). It gets a
+row of its own here because its *mutation* path is different from either: label edits are
+per-sample value patches, not bitmap deltas or bulk analytical writes. See
+[api.md](api.md#fields) for the field kinds this maps to and
+[api.md](api.md#post-apicommits) for why patch commits do not face the same billion-row
+risk that tag-per-sample rows did.
 
 ### Why ClickHouse for sample metadata
 

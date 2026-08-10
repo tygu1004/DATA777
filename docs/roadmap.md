@@ -47,23 +47,26 @@ Two consequences for data777 specifically:
   fragile. Extensions likely have to run out-of-process (subprocess or HTTP), which is
   itself an API design decision.
 
-## 3. The data model is only tags — *structural, and revises existing contracts*
+## 3. The data model is only tags — *resolved 2026-08-10*
 
-A sample carries `tags: []string` and nothing else. Real curation needs classifications,
-bounding boxes, segmentation masks, keypoints, and arbitrary metadata — "show me images
-where the model predicted *car* below 0.5 confidence but the ground truth says *car*"
-is not expressible today.
+A sample used to carry `tags: []string` and nothing else, which could not express
+"show me images where the model predicted *car* below 0.5 confidence but the ground
+truth says *car*."
 
-This one is not additive. It revises what is already committed:
+Addressed in [api.md](api.md#fields): a typed field schema (`scalar` / `tags` / `labels`,
+with `classification` / `detection` / `keypoints` label types), `Filter` generalized from
+hardcoded top-level keys to a predicate list over named fields (with `elem_match` for
+per-object conditions on a labels field), and the commit model split into `set` (bulk,
+selection-scoped, membership fields only — same free-inversion property tags always had)
+and `patch` (per-sample value edits, bounded by human review volume rather than dataset
+size).
 
-- **`Filter` hardcodes field names.** `{"tags": …, "width": …}` has no room for nested,
-  per-object predicates. The generalization is a field path plus an operator —
-  `{"field": "predictions.detections.confidence", "op": "lt", "value": 0.5}` — which is
-  the model FiftyOne uses.
-- **The commit model does not cover label edits.** Roaring bitmaps express *set membership*:
-  a tag is on or off. A label is a *value* — nudging a bounding box by five pixels is not a
-  set operation. Tag commits and value commits need different representations, and
-  [api.md](api.md) currently only describes the first.
+**Left open by that resolution, not solved:** cheap undo for a bulk, pipeline-driven
+overwrite of a non-tag scalar field across an arbitrary-size selection. `set`'s free
+inversion only holds for membership fields; a scalar overwrite needs each sample's prior
+value to revert, which does not compress the way a bitmap delta does. Revisit if a
+concrete use case for large-scale scalar reclassification shows up — segmentation masks are
+similarly deferred, since mask storage is its own design question.
 
 ## 4. No embeddings or similarity search — *structural*
 
@@ -118,8 +121,7 @@ wrong thing.
 
 ## Suggested order
 
-1. Data model and filter generalization (item 3) — the only one that revises committed
-   contracts, so it blocks anything built on them
+1. ~~Data model and filter generalization (item 3)~~ — done, see [api.md](api.md#fields)
 2. Extension point contract (item 2)
 3. Vector index layer, including similarity ordering (item 4)
 4. API additions for SDK access patterns (item 1)

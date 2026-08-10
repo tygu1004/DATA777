@@ -169,9 +169,10 @@ Casbin/OPA + oauth2-proxy + Docker Compose/Helm 조합으로 정리했음.
 - 거버넌스/라이선스 모델 구체화 (재단화 여부 등)
 - ClickHouse 구현체, 아틀라스 엔드포인트, 필터 사이드바 UI — 계약만 정의됨, 구현 대기
 - **구조적 미비 7가지는 `docs/roadmap.md`에 정리됨** (2026-08-10). 유사 프로젝트
-  (FiftyOne·LightlyStudio·Rerun·CVAT·lakeFS) 비교에서 도출. 이 중 3번(데이터 모델)만
-  이미 커밋된 계약을 **수정**해야 하는 항목이라 다른 작업의 선행 조건 — 구현 시작 전에
-  먼저 처리할 것
+  (FiftyOne·LightlyStudio·Rerun·CVAT·lakeFS) 비교에서 도출. 유일하게 계약을 **수정**해야
+  했던 3번(데이터 모델)은 같은 날 처리 완료 — `docs/api.md`에 타입 있는 필드 스키마,
+  `Filter`의 술어 트리 일반화, `set`/`patch` 두 종류 커밋 모델 반영함. 나머지 6개는
+  기존 계약을 깨지 않고 확장하는 항목이라 순서 유연 — 다음은 2번(확장 지점) 권장
 
 ## 개발 환경 (머신별 역할 분리)
 
@@ -247,3 +248,24 @@ Casbin/OPA + oauth2-proxy + Docker Compose/Helm 조합으로 정리했음.
     Pixi v8 WebGPU 그리드(`react-window` 제거). 기존 의존성 3개 모두 React 19 지원 확인함.
   - **산출물**: `docs/architecture.md`, `docs/api.md` 신규 작성(둘 다 커밋 대상). 코드 변경
     없음 — 구현은 다음 세션부터. `docs/`가 정본이고 이 파일은 요약·로그만 유지.
+- 2026-08-10 (같은 세션, 계속): CLAUDE.md 추적 시작(개인 경로 정리 후 커밋), 유사 프로젝트
+  (FiftyOne·LightlyStudio·Rerun·CVAT·lakeFS/DVC) 비교로 구조적 미비 7개 도출해
+  `docs/roadmap.md` 신규 작성. 그중 데이터 모델(3번)을 같은 세션에 처리:
+  - **필드 스키마 신설**: `scalar`(고정 코어 필드) / `tags`(비트맵) / `labels`(데이터셋별
+    선언, `classification`·`detection`·`keypoints` 타입) 세 종류. `GET /api/schema`,
+    `POST /api/schema/fields` 추가.
+  - **`Filter` 일반화**: 태그·width 같은 하드코딩된 최상위 키를 없애고 `match` 술어 배열로
+    통일 (`{field, op, value}`). `labels` 필드는 `elem_match`로 라벨 객체 하나에 여러 조건이
+    동시에 걸리는 걸 표현(예: "신뢰도 0.5 미만인 car 탐지").
+  - **커밋을 `set`/`patch` 두 종류로 분리** — 이게 이번 세션에서 가장 중요한 발견. 비트맵
+    기반 `set`은 "추가의 역은 제거"라는 성질 덕에 공짜로 undo되는데, 이건 **집합 소속에만
+    성립**하고 스칼라 값에는 성립 안 함(값을 되돌리려면 이전 값을 알아야 함). 그래서 바운딩
+    박스 좌표 수정 같은 라벨 값 편집은 `patch`(샘플별 값, 서버가 이전 값 저장)로 별도 분리.
+    `patch`가 대규모에서 안전한 이유는 사람이 리뷰 세션당 수십~수천 개를 편집하기 때문이지
+    데이터셋 크기와 무관해서임 — 애초에 10억 개를 손으로 편집할 일이 없음.
+  - **의도적으로 안 풀고 남긴 문제**: 파이프라인이 대규모 선택 범위에 스칼라 필드를 일괄
+    덮어쓰는 경우의 저렴한 undo. `set`의 공짜 역연산이 집합 소속에만 통하므로, 이 경우는
+    `O(affected)` 비용을 받아들이거나 아직 없는 압축 기법이 필요 — `docs/api.md`·
+    `docs/roadmap.md`에 명시적으로 미해결로 남겨둠(조용히 얼버무리지 않음).
+  - `docs/architecture.md`의 3층 데이터 구조 표에도 라벨 상태 행 추가(샘플 메타데이터와
+    같은 SQLite에 두되, 변형 경로가 태그·메타데이터 어느 쪽과도 다르다는 점 명시).

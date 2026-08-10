@@ -38,7 +38,7 @@ This is what makes "select everything and tag it" a constant-size request.
 
 ## Data layers
 
-The workload splits into two halves with opposite characteristics, so the storage
+The workload splits into several parts with different characteristics, so the storage
 splits with it.
 
 | Layer | Characteristics | Default | Scale-out trigger | Scale-out |
@@ -47,6 +47,7 @@ splits with it.
 | Commits, HEAD, sessions | Small, frequently mutated, must be exact | SQLite | Multiple API replicas | PostgreSQL |
 | Tag state | Set membership per tag | Roaring bitmaps (BLOB) | — | unchanged |
 | Label state | Typed objects (classification/detection/keypoints) per sample, edited a few at a time by a human reviewer | SQLite, alongside sample metadata | — | unchanged |
+| Vector index | Fixed-length embeddings per sample; approximate nearest-neighbor reads, bulk writes, never edited by a human | Brute-force scan (SQLite BLOBs) | > 1M vectors in a field | External ANN engine (Qdrant recommended) |
 
 Each layer sits behind an interface and is replaced independently. Application code and
 the HTTP API do not change when an implementation is swapped.
@@ -68,6 +69,24 @@ single-static-binary property. Apache-2.0.
 
 ClickHouse is weak at frequent small updates, which is exactly why tag state does not
 live there as mutable rows (see below).
+
+### Why a brute-force default for vectors, and Qdrant beyond that
+
+The same small-to-large arc as everywhere else, deliberately, rather than requiring an
+external service from the first embedding: a linear scan over vectors stored as SQLite BLOBs
+is exact (not approximate) and fast enough up to roughly a million vectors per field — a
+single query costs `O(n·d)` multiply-adds, which stays in the tens-to-low-hundreds of
+milliseconds at that size. Past it, the same scan is what starts to cost real time on every
+similarity query, which is the trigger to bring in a purpose-built ANN index rather than a
+size picked for its own sake.
+
+[Qdrant](https://qdrant.tech/) is the recommended external engine: written in Rust with a
+pure-Go client (no CGO, same requirement that ruled out Lance and go-duckdb elsewhere in this
+document), Apache-2.0, and it supports filtered search natively — relevant because `near`
+combined with a `match` filter (see [api.md](api.md#filter)) is the common case, not the
+exception, in a curation tool. Milvus (what the user's original Milvus-as-a-container mental
+model for this layer was based on) remains a reasonable alternative; Qdrant is the default
+recommendation for its pure-Go client, not a rejection of Milvus.
 
 ### Why the Postgres trigger is *multiple servers*, not *multiple users*
 

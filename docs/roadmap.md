@@ -67,7 +67,7 @@ value to revert, which does not compress the way a bitmap delta does. Revisit if
 concrete use case for large-scale scalar reclassification shows up — segmentation masks are
 similarly deferred, since mask storage is its own design question.
 
-## 4. No embeddings or similarity search — *structural*
+## 4. No embeddings or similarity search — *resolved 2026-08-10*
 
 At 10 million samples, 200 per screen means 50,000 screens. Manual browsing is not a
 strategy, so tagging is the *output* of curation rather than the method. What actually
@@ -75,10 +75,19 @@ works at that scale is vector-based: near-duplicate removal, diversity sampling 
 labeling budget, "find more like this", and outlier detection. LightlyStudio is built
 entirely around this.
 
-Consequences: a vector index becomes a fourth data layer (optional and external, following
-the same pattern as ClickHouse), embeddings become a sample field (which depends on item 3),
-and the API needs ordering by similarity to a reference sample — something the current
-`sort`, which only handles scalar fields, cannot express.
+Addressed in [api.md](api.md#fields): a fourth field kind, `embedding` (fixed dims, a
+declared metric), with its own bulk write path rather than going through commits — an
+embedding is a model's output, not a curation decision, so there's nothing there to version
+or undo. `Filter` gained a `near` operator and `sort` a `near` variant, both reusing the same
+`/api/samples` pagination contract rather than adding a parallel search endpoint. Backing
+storage follows the established small-to-large arc:
+[brute-force by default, Qdrant past ~1M vectors](architecture.md#why-a-brute-force-default-for-vectors-and-qdrant-beyond-that).
+
+**Scope line drawn deliberately:** near-duplicate removal, diversity sampling, and outlier
+detection are curation *workflows* built on top of `near`, not new query syntax — they
+become [operators](plugins.md) (item 2) that search and then write `set` commits, which is
+why item 2 needed to land first. Bolting workflow-specific verbs onto the filter language
+itself was the tempting shortcut avoided here.
 
 ## 5. `Filter` should grow into a view pipeline — *additive*
 
@@ -141,7 +150,8 @@ wrong thing.
 3. ~~Job model (item 6)~~ — done, see [api.md](api.md#jobs); resolved out of order because
    item 2's long-running operators and item 3's original `set`-commit design both turned out
    to depend on it once the scale implications of "apply a commit" were worked through
-4. Vector index layer, including similarity ordering (item 4)
+4. ~~Vector index layer, including similarity ordering (item 4)~~ — done, see
+   [api.md](api.md#fields) and [architecture.md](architecture.md#data-layers)
 5. API additions for SDK access patterns (item 1)
 6. View pipeline and the "does not do" section (items 5, 7) — independent of everything above,
    can happen anytime

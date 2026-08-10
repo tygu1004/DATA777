@@ -15,7 +15,7 @@ list. Requests stay constant-size no matter how large the dataset is, which is w
 
 ## Fields
 
-A sample has three kinds of fields. This split exists because they are stored, filtered,
+A sample has four kinds of fields. This split exists because they are stored, filtered,
 and mutated differently — see [architecture.md](architecture.md#data-layers) for the
 storage side.
 
@@ -24,11 +24,21 @@ storage side.
 | `scalar` | `width`, `height`, `filesize`, `format`, `filename` | fixed, written once at index time | never (re-index only) |
 | `tags` | the `tags` field | roaring bitmap per tag | `set` commits |
 | `labels` | `ground_truth`, `predictions`, any dataset-defined name | list of typed label objects per sample | `patch` commits |
+| `embedding` | `clip_embedding`, any dataset-defined name | fixed-length float vector per sample, in a vector index | bulk upsert, **not commits** — see below |
 
-Scalar fields are fixed and built into every `Catalog` implementation. **Label fields are
-declared per dataset** — a dataset defines which named label fields it has and what type
-each one holds, since "detections called `predictions`" is a dataset choice, not a schema
-constant.
+Scalar fields are fixed and built into every `Catalog` implementation. **Label and
+embedding fields are declared per dataset** — a dataset defines which named fields it has
+and what type/dimensionality each one holds, since "detections called `predictions`" or "a
+512-dim CLIP embedding called `clip_embedding`" is a dataset choice, not a schema constant.
+
+**Embeddings are not versioned like tags or labels, and that's deliberate.** A tag or label
+records a human judgment about a sample — that's what the commit log exists to track. An
+embedding is a model's output: reproducible from the sample and the model, not a decision
+anyone made about it. Treating it as commit history would mean an "undo" for a number nobody
+chose, and would put every re-embedding run through the same versioned-mutation machinery
+built for curation state. So embeddings get their own bulk write path (below), outside the
+commit/job-for-mutation split — closer in spirit to how a thumbnail is generated than to how
+a tag is applied.
 
 Three label types are defined now; more (e.g. segmentation masks) are deferred until a
 dataset needs one, since mask storage is its own design question.
@@ -51,15 +61,47 @@ dataset needs one, since mask storage is its own design question.
     { "name": "width",       "kind": "scalar", "type": "int" },
     { "name": "tags",        "kind": "tags" },
     { "name": "ground_truth","kind": "labels", "type": "detection" },
-    { "name": "predictions", "kind": "labels", "type": "detection" }
+    { "name": "predictions", "kind": "labels", "type": "detection" },
+    { "name": "clip_embedding", "kind": "embedding", "dims": 512, "metric": "cosine" }
 ] }
 ```
 
+`metric` is one of `cosine`, `l2`, `dot` — how the vector index compares two vectors in that
+field. It's part of the field's declaration, not a per-query choice, because an ANN index is
+typically built around one metric.
+
 ### `POST /api/schema/fields`
 
-Declares a new label field. `{"name": "predictions", "kind": "labels", "type": "detection"}`.
-Idempotent — declaring the same name and type twice is a no-op; declaring the same name with
-a different type is a `409`.
+Declares a new `labels` or `embedding` field, e.g.
+`{"name": "predictions", "kind": "labels", "type": "detection"}` or
+`{"name": "clip_embedding", "kind": "embedding", "dims": 512, "metric": "cosine"}`.
+Idempotent — declaring the same name with the same definition twice is a no-op; declaring the
+same name with a different type/dims/metric is a `409`.
+
+### `POST /api/embeddings/{field}` · `GET /api/embeddings/{field}/{sample_id}`
+
+Bulk upsert and single read for a declared `embedding` field. **Not a commit** — see the note
+above; there is nothing here to undo, and no job wraps a single call (the caller batches).
+
+```jsonc
+// POST request
+{ "items": [
+    { "sample_id": 1042, "vector": [0.0123, -0.881, /* … 512 floats */] },
+    { "sample_id": 1077, "vector": [0.0091,  0.442, /* … */] }
+] }
+
+// GET response
+{ "sample_id": 1042, "vector": [0.0123, -0.881, /* … */] }
+```
+
+Computing embeddings for a dataset is naturally an [operator](plugins.md) — a model
+inference loop that reads samples via the public API and writes vectors back through this
+endpoint in batches — rather than a new job kind of its own; it already gets progress,
+cancellation, and a token from the [job](#jobs) machinery an operator runs under.
+
+`GET /api/samples` does **not** include vector values in list responses — a 512-float vector
+per row would make every grid page an order of magnitude heavier for a field most UI never
+needs to see raw. Reading one back is for debugging or export, not the scrollable grid.
 
 ---
 
@@ -84,7 +126,12 @@ empty list means the whole dataset.
     { "field": "predictions", "op": "elem_match", "value": [
         { "field": "label",      "op": "eq", "value": "car" },
         { "field": "confidence", "op": "lt", "value": 0.5 }
-    ] }
+    ] },
+
+    // near: keep only samples within max_distance of a reference — either a literal
+    // vector or, more commonly, "like this other sample" by id
+    { "field": "clip_embedding", "op": "near",
+      "value": { "sample_id": 1042, "max_distance": 0.3 } }
   ],
   "sort": { "field": "id", "dir": "asc" }
 }
@@ -99,12 +146,40 @@ field's kind:
 | `scalar` | `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`, `not_in`, `contains` (string only) |
 | `tags` | `all`, `any`, `none` |
 | `labels` | `elem_match` (value is a nested predicate list, evaluated per label object) |
+| `embedding` | `near` (value is `{vector}` or `{sample_id}`, plus optional `max_distance`) |
 
 `sort` defaults to `{"field": "id", "dir": "asc"}` and **must be total** — the grid
 addresses samples by position, so ordering has to be stable across requests.
 Implementations append `id` as a tiebreaker for non-unique sort fields. Sorting by a
-`labels` field is not defined (there is no single value to order by); sorting by embedding
-similarity is future work, tracked in [roadmap.md](roadmap.md#4-no-embeddings-or-similarity-search--structural).
+`labels` field is not defined (there is no single value to order by).
+
+Sorting by similarity uses a distinct shape instead of `dir`, since "closest first" isn't
+ascending or descending anything — it's the `near` predicate's own value pulled up to where
+`sort` usually goes:
+
+```jsonc
+{ "match": [ { "field": "tags", "op": "all", "value": ["outdoor"] } ],
+  "sort": { "near": { "field": "clip_embedding", "sample_id": 1042 } } }
+```
+
+This is "find images similar to sample 1042, restricted to ones tagged outdoor" — the same
+`/api/samples` pagination contract as everything else, so a similarity-ordered result scrolls
+exactly like any other view. It reuses this one query mechanism rather than adding a separate
+"similarity search" endpoint alongside it.
+
+`near` in `match` and `near` in `sort` are two uses of the same primitive, not two features:
+filtering by distance keeps everything within a radius, ordering by distance keeps
+everything, closest first. A client can combine both — filter to a radius, then also make
+sure the closest ones page in first.
+
+**What `near` deliberately does not cover.** Near-duplicate removal ("keep one from each
+tight cluster"), diversity sampling ("pick 10,000 spread across the embedding space"), and
+outlier detection are curation *workflows* built on top of similarity search, not filters —
+a Filter says what to keep from a static condition, these decide what to keep by looking at
+the whole neighborhood structure. They belong as [operators](plugins.md) that call `near`
+searches internally and write `set` commits (e.g. tag the duplicates), not as new query
+syntax — see [roadmap item 4](roadmap.md#4-no-embeddings-or-similarity-search--resolved-2026-08-10)
+for why this scope line was drawn here.
 
 Nesting `match` lists inside `match` for OR-of-AND groups is not supported yet — everything
 today is one flat AND list, matching what existed before this generalized the shorthand
@@ -420,6 +495,29 @@ Implementations:
 Selecting an implementation is a deployment decision. The HTTP API above and the entire
 frontend are identical either way.
 
+### `VectorIndex`
+
+A separate interface from `Catalog`, deliberately — the two are chosen independently (a
+deployment can pair `SQLiteCatalog` with an external ANN engine, or `ClickHouseCatalog` with
+the brute-force default; see [architecture.md](architecture.md#data-layers) for why).
+
+```go
+type VectorIndex interface {
+    Upsert(ctx context.Context, field string, id int64, vector []float32) error
+    Delete(ctx context.Context, field string, id int64) error
+    Search(ctx context.Context, field string, query []float32, k int, f Filter) ([]ScoredSample, error)
+}
+```
+
+`Search` taking a `Filter` is "similar to this, but only among samples matching this
+condition" — the combined query `near` in `match` expresses at the API level. **How well a
+backend honors that filter varies and is a backend-quality question, not something this
+interface resolves generically.** A brute-force implementation filters trivially, since it
+already visits every candidate. A true ANN index either needs native filtered search (some
+do) or has to over-fetch past `k` and filter after, which can under-return on a selective
+filter — noted here rather than glossed over, since it's a real accuracy/latency tradeoff an
+operator author needs to know about, not an implementation detail this contract can hide.
+
 ---
 
 ## How this contract addresses the scale constraints
@@ -435,6 +533,7 @@ frontend are identical either way.
 | Per-sample label edits at dataset scale | `patch` commits are bounded by human review volume, not dataset size — see the note under `POST /api/commits` |
 | Filter hardcoding field names | `match` is a predicate list over `GET /api/schema` fields, not fixed top-level keys |
 | A large `set` commit blocking the HTTP request that started it | mutations run as [jobs](#jobs) — `202` plus a pollable `job_id`, not a held-open connection |
+| Manual review as the only way to navigate 1B samples | `near` filter/sort surfaces similarity, so curation starts from structure instead of browsing every screen |
 | One HTTP request per thumbnail | `/api/atlas` batches a window into a single image |
 
 **Not yet solved:** cheap, bulk-scale undo for a pipeline-driven overwrite of a non-tag

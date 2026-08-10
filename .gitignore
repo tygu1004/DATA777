@@ -5,6 +5,5 @@
 /web/tsconfig.tsbuildinfo
 /internal/server/webdist/*
 !/internal/server/webdist/index.html
-/CLAUDE.md
 .claude/
 .omc/

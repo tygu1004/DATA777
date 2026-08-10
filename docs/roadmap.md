@@ -10,22 +10,24 @@ without breaking it and can wait.
 
 ---
 
-## 1. No Python SDK — *structural*
+## 1. No Python SDK — *resolved 2026-08-10*
 
-Curation results are trapped in the browser. An engineer who tags 50,000 hard negatives in
-the dashboard has no way to feed that selection into a training loop; FiftyOne and
-LightlyStudio both make `pip install` the entry point. The reverse direction is missing too —
-model predictions need a path *into* the tool to be reviewed, and today only folder indexing
-exists.
+Curation results were trapped in the browser. An engineer who tags 50,000 hard negatives in
+the dashboard had no way to feed that selection into a training loop; FiftyOne and
+LightlyStudio both make `pip install` the entry point. The reverse direction was missing too
+— model predictions need a path *into* the tool to be reviewed, and only folder indexing
+existed.
 
-The SDK itself is thin, because [the API contract](api.md) already exists and the dashboard
-uses the same endpoints. What matters now is that scripts need access patterns a UI never
-does, and those belong in the contract before an SDK is written:
-
-- Streaming/cursor iteration over an entire result set, not a window
-- Reads pinned to a commit, so a training export is not disturbed by concurrent edits
-- Token authentication for non-browser clients
-- View export in standard formats (COCO, YOLO, Parquet)
+Addressed in [sdk.md](sdk.md): a thin Pydantic-typed client over the existing API, with no
+client-side query logic of its own. The three access patterns scripts need but the dashboard
+never did all landed in [api.md](api.md) first, so the SDK could stay a direct translation
+rather than growing separate machinery: `cursor`-based keyset pagination for a full walk
+(`offset` stays for the scrollable grid), `at_commit` to pin a read against concurrent
+curation, and bearer tokens (`POST /api/tokens`) for non-browser auth. View export to
+COCO/YOLO/Parquet is deliberately client-side, not a new server endpoint — the same
+scope line drawn for [near-duplicate removal and diversity sampling](#4-no-embeddings-or-similarity-search--resolved-2026-08-10):
+format-specific logic belongs in the layer that only needs the ordinary read API to do it,
+not in the server.
 
 ## 2. No extension points — *resolved 2026-08-10*
 
@@ -152,6 +154,7 @@ wrong thing.
    to depend on it once the scale implications of "apply a commit" were worked through
 4. ~~Vector index layer, including similarity ordering (item 4)~~ — done, see
    [api.md](api.md#fields) and [architecture.md](architecture.md#data-layers)
-5. API additions for SDK access patterns (item 1)
+5. ~~API additions for SDK access patterns, and the SDK itself (item 1)~~ — done, see
+   [sdk.md](sdk.md)
 6. View pipeline and the "does not do" section (items 5, 7) — independent of everything above,
-   can happen anytime
+   can happen anytime; the only two left

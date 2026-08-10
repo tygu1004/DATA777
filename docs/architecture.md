@@ -230,5 +230,6 @@ directly onto a GPU texture atlas, so the transport and the renderer want the sa
 - [API contract](api.md) — the filter and selection descriptors, and the endpoints built on them.
 - [Plugin contract](plugins.md) — operators and panels, run as external HTTP services rather
   than Go plugins, following the same optional-attachment pattern as the data layers above.
+- [Python SDK](sdk.md) — a thin client over the same API contract, not a second implementation.
 - [Open structural work](roadmap.md) — what this architecture does not yet cover, and which
   gaps revise the contracts above rather than extend them.

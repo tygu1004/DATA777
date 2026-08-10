@@ -20,7 +20,7 @@ container, remote host. This falls directly out of two decisions already made:
   treats external engines as optional attachments behind an interface. A plugin is the same
   pattern at the application layer instead of the storage layer.
 - An operator does its actual work by calling the same public API a human client or the
-  [Python SDK](roadmap.md#1-no-python-sdk--structural) would use — reading samples, writing
+  [Python SDK](sdk.md) would use — reading samples, writing
   `set`/`patch` commits ([api.md](api.md#post-apicommits)). It needs no special write path
   into the datastore. In effect, **an operator is an SDK script with a declared UI form and
   a way for the dashboard to trigger it** — not a separate integration surface.

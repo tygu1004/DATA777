@@ -13,6 +13,29 @@ list. Requests stay constant-size no matter how large the dataset is, which is w
 
 ---
 
+## Authentication
+
+The dashboard authenticates by browser session; every other client — the
+[Python SDK](sdk.md), a script, a [plugin operator](plugins.md) — authenticates with a
+bearer token, since neither of those has a browser session to carry.
+
+```
+POST   /api/tokens          create a token — { "name": "training-export" } → { "id": "...", "secret": "d777_..." } (secret shown once)
+GET    /api/tokens          list tokens (metadata only — never the secret again)
+DELETE /api/tokens/{id}     revoke
+```
+
+`Authorization: Bearer d777_...` on every request. Tokens are coarse-grained — full read/write
+access, optionally with an expiry — matching this project's existing stance that fine-grained
+ACL is opt-in extension territory rather than core complexity every deployment carries. A
+deployment that needs per-token scoping puts a policy layer in front, the same way it would
+add Casbin/OPA behind the `can(user, action, resource)` gate for user-facing authorization.
+
+Token metadata (id, name, hash, expiry) lives alongside commits/HEAD/sessions — small,
+exact, no scale story of its own.
+
+---
+
 ## Fields
 
 A sample has four kinds of fields. This split exists because they are stored, filtered,
@@ -257,8 +280,30 @@ Returns one window of samples. **Does not return a total** — see `/api/samples
 | Parameter | Default | Notes |
 |---|---|---|
 | `filter` | none (all) | base64url JSON |
-| `offset` | `0` | position in the sorted order |
+| `offset` | `0` | position in the sorted order — for a scrollable grid |
+| `cursor` | — | opaque, from the previous page's `next_cursor` — for a full walk |
 | `limit` | `200` | capped server-side |
+| `at_commit` | HEAD | evaluate tag/label state as of this commit instead of current HEAD |
+
+`offset` and `cursor` are two ways to page through the same ordering, for two different
+callers. A grid needs *position* — jump to 80% down the scrollbar — which is what `offset`
+answers. A script walking the entire matching set start to finish needs neither position nor
+`offset`'s O(offset) cost; it needs `next_cursor` (derived from the last row's sort-key
+values) fed back into the next request, the standard keyset-pagination shape. It is also the
+only one of the two that stays correct if a mutation lands mid-walk — a cursor never skips or
+repeats rows relative to *its own* position, where an offset can if rows before it shift.
+This is what the [SDK](sdk.md)'s iteration needs and the grid never does, so both stay
+available rather than picking one for every caller.
+
+`at_commit` is what makes a training export not get disturbed by a curation session running
+concurrently — pin the read to the commit that was current when the export started, not
+whatever HEAD has moved to by the time a 500M-row walk finishes. Reconstructing tag/label
+state as of an older commit costs work proportional to *how many commits* separate it from
+the nearest state a `Catalog` implementation has cached — commits are curation actions
+(thousands to low millions even for a huge dataset), not one per sample, so this stays cheap
+even though it isn't free. Implementations may periodically snapshot state every N commits to
+bound the worst case; that's a performance choice `Catalog` implementations make internally,
+not something this contract requires.
 
 ```jsonc
 { "items": [ { "id": 1, "path": "...", "filename": "a.jpg", "width": 4000,
@@ -266,12 +311,14 @@ Returns one window of samples. **Does not return a total** — see `/api/samples
                "tags": ["cat"],
                "labels": { "predictions": [
                  { "label": "car", "confidence": 0.81, "bbox": [0.12, 0.30, 0.20, 0.15] }
-               ] } } ] }
+               ] } } ],
+  "next_cursor": "eyJpZCI6MX0" }   // omitted on the final page
 ```
 
 `labels` is keyed by field name (from `GET /api/schema`) and present only when the dataset
 has declared at least one `labels` field; it is omitted entirely for datasets that only use
-tags, so nothing changes for a tags-only sample.
+tags, so nothing changes for a tags-only sample. `next_cursor` is present whenever a `cursor`
+request could continue paging; a client using `offset` instead can ignore it.
 
 Splitting the count out of this response is deliberate. The current implementation runs
 `COUNT(*)` on every page request, which is a full scan per scroll tick.
@@ -288,14 +335,16 @@ Splitting the count out of this response is deliberate. The current implementati
 { "count": 1043221 }
 ```
 
-Takes `filter`. Called once when the filter changes, not once per page. Results are cached
-per filter; exact counts at billion scale are expensive enough that implementations may
-serve a cached value while a refresh runs.
+Takes `filter` and `at_commit` (same meaning as on `/api/samples`). Called once when the
+filter changes, not once per page. Results are cached per filter; exact counts at billion
+scale are expensive enough that implementations may serve a cached value while a refresh
+runs. A pinned export computes this once against its `at_commit` rather than re-deriving a
+moving total as HEAD advances underneath it.
 
 ### `GET /api/tags`
 
 Tag names with the number of matching samples, for the filter sidebar. Takes an optional
-`filter` to scope counts to the current view.
+`filter` and `at_commit` to scope counts to the current view or a pinned point in history.
 
 ```jsonc
 { "items": [ { "tag": "cat", "count": 84021 }, { "tag": "blurry", "count": 133 } ] }
@@ -534,6 +583,8 @@ operator author needs to know about, not an implementation detail this contract 
 | Filter hardcoding field names | `match` is a predicate list over `GET /api/schema` fields, not fixed top-level keys |
 | A large `set` commit blocking the HTTP request that started it | mutations run as [jobs](#jobs) — `202` plus a pollable `job_id`, not a held-open connection |
 | Manual review as the only way to navigate 1B samples | `near` filter/sort surfaces similarity, so curation starts from structure instead of browsing every screen |
+| A full-dataset SDK walk paying `offset`'s O(offset) cost, or drifting under concurrent edits | `cursor`-based keyset pagination, stable independent of `offset`/mutations |
+| A training export disturbed by curation happening during the export | `at_commit` pins reads to a fixed point in history |
 | One HTTP request per thumbnail | `/api/atlas` batches a window into a single image |
 
 **Not yet solved:** cheap, bulk-scale undo for a pipeline-driven overwrite of a non-tag

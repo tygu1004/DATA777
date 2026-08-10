@@ -27,25 +27,24 @@ does, and those belong in the contract before an SDK is written:
 - Token authentication for non-browser clients
 - View export in standard formats (COCO, YOLO, Parquet)
 
-## 2. No extension points — *structural*
+## 2. No extension points — *resolved 2026-08-10*
 
-Adding anything — say, auto-tagging blurry images — currently requires forking the Go binary
-and editing core. Every feature has to pass through one maintainer, and niche needs (DICOM,
-satellite imagery, a specific label format) never land because they would bloat core. A
-project whose stated goal is community sustainability has no mechanism for it.
+Adding anything used to require forking the Go binary and editing core, so every feature had
+to pass through one maintainer and niche needs (DICOM, satellite imagery, a specific label
+format) never landed. A project whose stated goal is community sustainability had no
+mechanism for it.
 
-FiftyOne splits extensions in two, which is a useful reference: **operators** (an action run
-against a selection, declaring typed inputs the UI renders as a form) and **panels** (a
-registered UI surface, like an embedding scatter plot).
+Addressed in [plugins.md](plugins.md): operators (an action run against a selection,
+declaring JSON-Schema inputs the UI renders as a form) and panels (a registered UI surface,
+mounted at `sidebar` / `sample-detail` / `tab`), following FiftyOne's split of the same idea.
+Go's lack of a practical in-process plugin story settled the mechanism — plugins run as
+external HTTP services, registered via static config, with both operator execution and panel
+UI proxied through data777's own server so a plugin is never called directly from the
+browser. An operator does its work through the same public API a script would, so it can
+never do anything `POST /api/undo` cannot revert.
 
-Two consequences for data777 specifically:
-
-- The UI needs *slots* where plugin-contributed actions and panels appear, plus a way to
-  render plugin-declared forms. A toolbar with hardcoded buttons has to be rebuilt to get
-  them.
-- Go has no practical in-process plugin story — the `plugin` package is Linux-only and
-  fragile. Extensions likely have to run out-of-process (subprocess or HTTP), which is
-  itself an API design decision.
+Long-running operators (embedding computation, batch inference) return a `job_id` backed by
+the job model resolved in item 6, below.
 
 ## 3. The data model is only tags — *resolved 2026-08-10*
 
@@ -90,19 +89,35 @@ match, sort, sample, group, limit — each transforming a view.
 This can wait because the existing flat filter becomes the first stage of a pipeline
 without breaking anything: `{"stages": [{"type": "filter", …}]}`.
 
-## 6. No job model — *additive*
+## 6. No job model — *resolved 2026-08-10*
 
-Computing embeddings for 10M images takes hours on a GPU. The current design has one
-hardcoded job with one global status (`/api/index`, `/api/index/status`): two users cannot
-run two jobs, nothing can be cancelled or retried, progress is a single counter, and a
-restart loses everything.
+Computing embeddings for 10M images takes hours on a GPU, and applying a large `set` commit
+can itself take real wall-clock time to resolve a filter into a bitmap — the original design
+had one hardcoded job with one global status (`/api/index`, `/api/index/status`), where two
+users could not run two jobs, nothing could be cancelled, progress was a single counter, and
+a restart lost everything.
 
-What is needed is ordinary: submit a job, get an id, poll or stream progress, cancel, retry
-failures, see history — with workers in separate processes. Additive, since indexing becomes
-one job type among several.
+Addressed in [api.md](api.md#jobs): a general `Job` resource (`queued` / `running` /
+`succeeded` / `failed` / `canceled`, with progress and a typed result) that `set`/`patch`
+commits, undo, indexing, and plugin operators all go through — indexing's ad hoc status
+endpoint is retired in favor of it. `?wait=Ns` long-polling means small jobs still feel
+synchronous without the API needing two response shapes.
+
+**Retry** is not a separate mechanism: a job's input is the same request body a client
+already has, so retrying a failure is resubmitting that request, which creates a new job. No
+failed-job resume state needs to be kept around.
+
+**Left open:** what happens to a job's bookkeeping across a server restart. Job records
+(id, kind, status, progress, result) are persisted so history survives a restart, but a Go
+goroutine does not — a job still `running` or `queued` when the process stops cannot resume
+mid-computation. The honest behavior is to mark such jobs `failed` on the next startup
+(with a distinct error, e.g. "interrupted by restart") rather than silently losing them or
+pretending they completed; the client's own retry (resubmit) is what recovers. Not yet
+implemented, but the intended behavior is recorded here so it doesn't get decided
+accidentally.
 
 Worth noting that FiftyOne sells orchestration in its enterprise tier, so this is a gap
-data777 can fill for free.
+data777 fills for free.
 
 ## 7. The versioning boundary is not written down — *additive*
 
@@ -122,7 +137,11 @@ wrong thing.
 ## Suggested order
 
 1. ~~Data model and filter generalization (item 3)~~ — done, see [api.md](api.md#fields)
-2. Extension point contract (item 2)
-3. Vector index layer, including similarity ordering (item 4)
-4. API additions for SDK access patterns (item 1)
-5. View pipeline, job model, and the "does not do" section (items 5–7)
+2. ~~Extension point contract (item 2)~~ — done, see [plugins.md](plugins.md)
+3. ~~Job model (item 6)~~ — done, see [api.md](api.md#jobs); resolved out of order because
+   item 2's long-running operators and item 3's original `set`-commit design both turned out
+   to depend on it once the scale implications of "apply a commit" were worked through
+4. Vector index layer, including similarity ordering (item 4)
+5. API additions for SDK access patterns (item 1)
+6. View pipeline and the "does not do" section (items 5, 7) — independent of everything above,
+   can happen anytime

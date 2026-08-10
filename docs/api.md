@@ -138,6 +138,43 @@ limit (default 10,000) and direct the client to use `filter` mode instead.
 All responses are JSON unless noted. Errors use `{"error": "message"}` with an appropriate
 status code. Empty lists always serialize as `[]`, never `null`.
 
+### Jobs
+
+Every mutation that isn't O(1) — applying a `set` commit, undo, indexing, a plugin operator
+— runs as a job instead of blocking the HTTP request that started it. This matters most for
+`set`: turning a filter into the affected-set bitmap can mean streaming hundreds of millions
+of matching row IDs out of the analytical store before anything can be written, which is not
+something to hold an HTTP connection open for.
+
+```jsonc
+{ "id": "job_8f2e1a", "kind": "commit",           // commit | undo | index | operator
+  "status": "running",                             // queued | running | succeeded | failed | canceled
+  "progress": { "processed": 84021, "total": 500000000 },  // total omitted if not known in advance
+  "created_at": "...", "started_at": "...", "finished_at": null,
+  "error": null,
+  "result": null }                                 // populated once succeeded; shape depends on kind
+```
+
+```
+POST /api/jobs/{id}/cancel     cancel a queued or running job
+GET  /api/jobs/{id}            job status; ?wait=Ns long-polls up to N seconds for a terminal state
+GET  /api/jobs                 list, optionally filtered by ?status=
+```
+
+**Why failure never needs an explicit rollback.** A job computes its complete result — the
+affected-set bitmap, the resolved patch list — in isolation, and touches the live commit log
+and HEAD with exactly one atomic write at the very end. Nothing is visible to any reader
+until that final write succeeds, so a job that errors or is canceled midway simply never
+reaches it: there is no partial state to undo, because none was ever applied. The same
+property makes concurrent reads safe during a huge job — `/api/samples` and `/api/tags`
+always show either the state before the job or the state after it, never in between.
+
+**Small jobs stay fast without a separate synchronous path.** Rather than branching the API
+on operation size, a client can `GET /api/jobs/{id}?wait=2` right after creating one; a job
+that finishes within the wait window returns its terminal state on that same call, so tagging
+ten samples feels exactly as immediate as it did as a synchronous `201` — the size-dependent
+case just keeps polling.
+
 ### `GET /api/samples`
 
 Returns one window of samples. **Does not return a total** — see `/api/samples/count`.
@@ -194,8 +231,11 @@ a scan.
 
 ### `POST /api/commits`
 
-A commit has one of two shapes, because tag mutations and label edits compress differently.
-This is a real fork, not a formatting choice — see the note after the examples.
+Always **202**, returning a job — see [Jobs](#jobs) above for why, and for how the
+`?wait=` param keeps a small commit feeling instant. `{"job_id": "job_8f2e1a"}`.
+
+A commit itself has one of two shapes, because tag mutations and label edits compress
+differently. This is a real fork, not a formatting choice — see the note after the examples.
 
 **`kind: "set"`** — the same operation applied to every sample in a selection. Today this
 is only valid for `tags` fields (`kind: "tags"` in the schema).
@@ -205,14 +245,15 @@ is only valid for `tags` fields (`kind: "tags"` in the schema).
 { "message": "tag cats", "kind": "set", "field": "tags",
   "selection": { /* Selection */ }, "op": "add", "value": "cat" }
 
-// response — 201
-{ "id": 12, "parent_id": 11, "message": "tag cats", "kind": "set",
-  "created_at": "2026-08-10T12:00:00Z", "affected_count": 84021 }
+// GET /api/jobs/{id} once succeeded
+{ "id": "job_8f2e1a", "kind": "commit", "status": "succeeded",
+  "progress": { "processed": 84021, "total": 84021 },
+  "result": { "commit_id": 12, "parent_id": 11, "affected_count": 84021 } }
 ```
 
 The request body carries a **selection**, not an operation per sample — tagging 500 million
 samples is the same request size as tagging one, and `affected_count` is computed
-server-side.
+server-side as the job runs (`progress.processed`), not returned all at once at the end.
 
 **`kind: "patch"`** — a different value for each sample, for label edits made during
 interactive review (nudging a box, correcting a classification).
@@ -225,9 +266,10 @@ interactive review (nudging a box, correcting a classification).
     { "sample_id": 1077, "index": null, "value": { "label": "car", "bbox": [0.55, 0.10, 0.18, 0.22] } }
   ] }
 
-// response — 201
-{ "id": 13, "parent_id": 12, "message": "fix 3 boxes", "kind": "patch",
-  "created_at": "...", "affected_count": 2 }
+// GET /api/jobs/{id} once succeeded — patch jobs are small by construction (see below),
+// so in practice this is what a client sees from a single ?wait= call, not repeated polling
+{ "id": "job_9c1b04", "kind": "commit", "status": "succeeded",
+  "result": { "commit_id": 13, "parent_id": 12, "affected_count": 2 } }
 ```
 
 `index` selects which label object in that sample's list is being replaced; `null` appends
@@ -249,7 +291,7 @@ undoable without the client needing to know what it is overwriting.
 > pipeline-driven overwrite of a non-tag scalar field across an arbitrary-size selection is
 > not solved by this contract** — cheap undo for that case needs either accepting
 > `O(affected)` cost for that operation specifically, or a compression trick not yet
-> designed. Left open; tracked in [roadmap.md](roadmap.md#3-the-data-model-is-only-tags--structural-and-revises-existing-contracts).
+> designed. Left open; tracked in [roadmap.md](roadmap.md#3-the-data-model-is-only-tags--resolved-2026-08-10).
 
 ### `GET /api/commits`
 
@@ -267,15 +309,22 @@ existed, so that undone commits disappear from the history as expected.
 
 ### `POST /api/undo`
 
-Moves HEAD to the parent commit. Returns `409` when there is no parent.
+**202**, a job (`kind: "undo"`). Returns `409` immediately, with no job created, when there
+is no parent commit — that check doesn't need a job, it's a lookup against the current HEAD.
 
 ```jsonc
-{ "head_commit_id": 11 }   // null once history is empty
+// GET /api/jobs/{id} once succeeded
+{ "id": "job_1a2b3c", "kind": "undo", "status": "succeeded",
+  "result": { "head_commit_id": 11 } }   // null once history is empty
 ```
 
-For a `set` commit, undo is a bitmap operation against the stored tag set. For a `patch`
-commit, undo restores each patch's stored prior value. Neither replays one row per affected
-sample from the client.
+For a `set` commit, undo applies the inverse of the bitmap that was stored *when the commit
+was made* — it does not recompute the original filter, so its cost does not depend on how
+expensive that filter was to evaluate the first time. For a `patch` commit, undo restores
+each patch's stored prior value. In practice undo is close to instant either way, since both
+paths are one bounded read plus one atomic pointer move; it goes through the job envelope
+for the same reason everything else does — so the client never has to guess in advance
+whether a given mutation will be fast.
 
 ### `GET /api/thumbnails/{id}` · `GET /api/previews/{id}`
 
@@ -297,9 +346,21 @@ does not need a companion manifest.
 One HTTP request per thumbnail does not survive contact with the target scale. An atlas also
 maps one-to-one onto a GPU texture atlas, so transport and renderer want the same shape.
 
-### `POST /api/index` · `GET /api/index/status`
+### `POST /api/index`
 
-Unchanged. Starts indexing a source path and reports progress.
+**202**, a job (`kind: "index"`). `{"path": "/data/images"}` → `{"job_id": "..."}`.
+
+This replaces the earlier bespoke `GET /api/index/status` — indexing was always this
+pattern (submit, poll, watch a counter climb), just with a one-off status endpoint instead of
+the general [Jobs](#jobs) resource. Folding it in is what makes indexing cancelable, and
+gives it the same `?wait=` short-poll behavior as everything else, for free.
+
+### `GET /api/plugins` · `POST /api/plugins/reload` · `POST /api/plugins/{plugin}/operators/{operator}` · `GET /api/plugins/{plugin}/panels/{panel}/*`
+
+See [plugins.md](plugins.md) — the operator/panel extension contract. Both operator
+execution and panel UI are proxied through these endpoints rather than called directly from
+the browser, so a plugin only ever needs to be reachable from the server, never from the
+client.
 
 ---
 
@@ -328,6 +389,27 @@ type Catalog interface {
 tag-specific method to any `kind: "tags"` field, since the schema is what determines which
 fields support it rather than the method signature.
 
+These methods stay ordinary synchronous Go calls — a call that takes a while to return is
+not a problem inside the server process, only across an HTTP request. The async boundary
+belongs to a separate `internal/jobs` package that wraps them, not to `Catalog` itself:
+
+```go
+type Jobs interface {
+    Enqueue(ctx context.Context, kind string,
+        run func(ctx context.Context, report ProgressFunc) (result any, err error)) (*Job, error)
+    Get(ctx context.Context, id string) (*Job, error)
+    Cancel(ctx context.Context, id string) error
+    List(ctx context.Context, status string) ([]Job, error)
+}
+```
+
+An HTTP handler for `POST /api/commits` enqueues a closure that calls `ApplySet`/`ApplyPatch`
+from a worker goroutine, passing `report` down so `Catalog` can update `progress.processed`
+as it streams matches; canceling a job cancels that goroutine's `context.Context`, which
+`Catalog` implementations are expected to check periodically during a large scan. `Jobs` has
+no ClickHouse/SQLite split — it is in-process bookkeeping regardless of which `Catalog` is
+active.
+
 Implementations:
 
 | Implementation | Flag | Status |
@@ -352,6 +434,7 @@ frontend are identical either way.
 | One commit row per affected sample (tags) | `set` commits store a field, an operation, and a roaring bitmap |
 | Per-sample label edits at dataset scale | `patch` commits are bounded by human review volume, not dataset size — see the note under `POST /api/commits` |
 | Filter hardcoding field names | `match` is a predicate list over `GET /api/schema` fields, not fixed top-level keys |
+| A large `set` commit blocking the HTTP request that started it | mutations run as [jobs](#jobs) — `202` plus a pollable `job_id`, not a held-open connection |
 | One HTTP request per thumbnail | `/api/atlas` batches a window into a single image |
 
 **Not yet solved:** cheap, bulk-scale undo for a pipeline-driven overwrite of a non-tag

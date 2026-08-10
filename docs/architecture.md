@@ -200,3 +200,5 @@ directly onto a GPU texture atlas, so the transport and the renderer want the sa
 ## See also
 
 - [API contract](api.md) — the filter and selection descriptors, and the endpoints built on them.
+- [Open structural work](roadmap.md) — what this architecture does not yet cover, and which
+  gaps revise the contracts above rather than extend them.

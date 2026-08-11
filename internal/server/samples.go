@@ -4,30 +4,75 @@ import (
 	"net/http"
 	"strconv"
 
-	"data777/internal/store"
 	"data777/internal/thumbnail"
 )
 
-type listSamplesResponse struct {
-	Total int            `json:"total"`
-	Items []store.Sample `json:"items"`
+func (s *Server) handleListSamples(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilterParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	atCommit, err := parseAtCommit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid at_commit")
+		return
+	}
+	offset, limit := parsePagination(r, 200)
+	cursor := r.URL.Query().Get("cursor")
+
+	result, err := s.cat.ListSamples(r.Context(), f, listOptions(offset, cursor, limit, atCommit))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	resp := map[string]any{"items": result.Items}
+	if result.NextCursor != "" {
+		resp["next_cursor"] = result.NextCursor
+	}
+	if result.Seed != nil {
+		resp["seed"] = *result.Seed
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) handleListSamples(w http.ResponseWriter, r *http.Request) {
-	offset, limit := parsePagination(r, 200)
-
-	samples, err := s.db.ListSamples(offset, limit)
+func (s *Server) handleCountSamples(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilterParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	atCommit, err := parseAtCommit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid at_commit")
+		return
+	}
+	count, err := s.cat.CountSamples(r.Context(), f, atCommit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	total, err := s.db.CountSamples()
+	writeJSON(w, http.StatusOK, map[string]any{"count": count})
+}
+
+func (s *Server) handleTagCounts(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilterParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	atCommit, err := parseAtCommit(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid at_commit")
+		return
+	}
+	counts, err := s.cat.TagCounts(r.Context(), f, atCommit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	writeJSON(w, http.StatusOK, listSamplesResponse{Total: total, Items: samples})
+	writeJSON(w, http.StatusOK, map[string]any{"items": counts})
 }
 
 func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +90,7 @@ func (s *Server) serveGenerated(w http.ResponseWriter, r *http.Request, gen *thu
 		return
 	}
 
-	srcPath, err := s.db.GetSamplePath(id)
+	srcPath, err := s.cat.GetSamplePath(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "sample not found")
 		return
@@ -59,16 +104,4 @@ func (s *Server) serveGenerated(w http.ResponseWriter, r *http.Request, gen *thu
 
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	http.ServeFile(w, r, path)
-}
-
-func parsePagination(r *http.Request, defaultLimit int) (offset, limit int) {
-	offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
-	limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = defaultLimit
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	return offset, limit
 }

@@ -1,3 +1,6 @@
+// Package indexer walks a storage.Source root and records every supported image as a sample.
+// Indexing runs as a job (docs/api.md#post-apiindex) — this package just does the walk and
+// reports progress back through whatever callback the job wrapper hands it.
 package indexer
 
 import (
@@ -9,7 +12,6 @@ import (
 	_ "image/png"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
@@ -27,58 +29,25 @@ var supportedExt = map[string]string{
 	".bmp":  "bmp",
 }
 
-type State string
-
-const (
-	StateIdle    State = "idle"
-	StateRunning State = "running"
-	StateDone    State = "done"
-	StateError   State = "error"
-)
-
-type Status struct {
-	State     State  `json:"status"`
-	Processed int    `json:"processed"`
-	Error     string `json:"error,omitempty"`
-}
-
 type Indexer struct {
 	db     *store.DB
 	source storage.Source
-
-	mu     sync.Mutex
-	status Status
 }
 
 func New(db *store.DB, source storage.Source) *Indexer {
-	return &Indexer{db: db, source: source, status: Status{State: StateIdle}}
+	return &Indexer{db: db, source: source}
 }
 
-func (idx *Indexer) Status() Status {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	return idx.status
-}
-
-// StartIndex walks the given root in the background, recording every supported image as a
-// sample. Re-running against the same root is a no-op for files already indexed (path is
-// UNIQUE in the samples table).
-func (idx *Indexer) StartIndex(root string) error {
-	idx.mu.Lock()
-	if idx.status.State == StateRunning {
-		idx.mu.Unlock()
-		return fmt.Errorf("index already running")
-	}
-	idx.status = Status{State: StateRunning}
-	idx.mu.Unlock()
-
-	go idx.run(root)
-	return nil
-}
-
-func (idx *Indexer) run(root string) {
-	ctx := context.Background()
+// Run walks root, recording every supported image as a sample. Re-running against the same
+// root is a no-op for files already indexed (path is UNIQUE in the samples table). report is
+// called with total=0 to mean "not known in advance" (api.md#jobs).
+func (idx *Indexer) Run(ctx context.Context, root string, report func(processed, total int64)) (any, error) {
+	var processed int64
 	err := idx.source.Walk(ctx, root, func(path string, size int64) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
 		format, ok := supportedExt[strings.ToLower(filepath.Ext(path))]
 		if !ok {
 			return nil
@@ -98,18 +67,12 @@ func (idx *Indexer) run(root string) {
 			return err
 		}
 
-		idx.mu.Lock()
-		idx.status.Processed++
-		idx.mu.Unlock()
+		processed++
+		report(processed, 0)
 		return nil
 	})
-
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
 	if err != nil {
-		idx.status.State = StateError
-		idx.status.Error = err.Error()
-		return
+		return nil, fmt.Errorf("index %s: %w", root, err)
 	}
-	idx.status.State = StateDone
+	return map[string]any{"processed": processed}, nil
 }

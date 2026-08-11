@@ -9,11 +9,16 @@ import (
 	"os"
 	"path/filepath"
 
+	"data777/internal/auth"
+	"data777/internal/catalog"
 	"data777/internal/indexer"
+	"data777/internal/jobs"
+	"data777/internal/plugins"
 	"data777/internal/server"
 	"data777/internal/storage"
 	"data777/internal/store"
 	"data777/internal/thumbnail"
+	"data777/internal/vectorindex"
 )
 
 func main() {
@@ -25,6 +30,7 @@ func main() {
 	s3Region := flag.String("s3-region", "us-east-1", "s3 region (storage=s3)")
 	s3Endpoint := flag.String("s3-endpoint", "", "custom s3 endpoint, e.g. http://localhost:9000 for RustFS/MinIO (storage=s3)")
 	s3PathStyle := flag.Bool("s3-path-style", true, "use path-style bucket addressing, required by most self-hosted s3-compatible servers (storage=s3)")
+	pluginsConfig := flag.String("plugins-config", "plugins.yaml", "plugin registration file (plugins.md#registration); missing file means no plugins")
 	flag.Parse()
 
 	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
@@ -51,8 +57,24 @@ func main() {
 		log.Fatalf("init preview cache: %v", err)
 	}
 
+	vector := vectorindex.NewBruteForce(db.DB)
+	cat := catalog.NewSQLite(db.DB, vector)
 	idx := indexer.New(db, source)
-	srv := server.New(db, idx, thumbs, previews)
+	tokens := auth.NewStore(db.DB)
+
+	jobsMgr := jobs.New(db.DB)
+	ctx := context.Background()
+	if err := jobsMgr.MarkInterruptedOnStartup(ctx); err != nil {
+		log.Fatalf("mark interrupted jobs: %v", err)
+	}
+
+	pluginsReg, err := plugins.Load(*pluginsConfig)
+	if err != nil {
+		log.Fatalf("load plugins config: %v", err)
+	}
+	pluginsReg.Reload(ctx)
+
+	srv := server.New(cat, vector, idx, thumbs, previews, jobsMgr, tokens, pluginsReg)
 
 	addr := fmt.Sprintf(":%d", *port)
 	log.Printf("data777 listening on %s (data dir: %s, storage: %s)", addr, *dataDir, *storageBackend)

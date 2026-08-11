@@ -1,50 +1,79 @@
-import { useCallback, useEffect, useState } from "react";
-import { listSamples } from "../api/client";
-import type { Sample, TagOp } from "../types";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import * as api from "../api/client";
+import type { Filter, Sample } from "../types";
 
-const PAGE_SIZE = 500;
+export const CHUNK_SIZE = 200;
 
-export function useSamples() {
-  const [samples, setSamples] = useState<Sample[]>([]);
-  const [loading, setLoading] = useState(false);
+export function filterKey(filter?: Filter): string {
+  return filter?.stages?.length ? JSON.stringify(filter) : "all";
+}
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      const first = await listSamples(0, PAGE_SIZE);
-      let items = first.items ?? [];
+export function useSampleCount(filter?: Filter) {
+  return useQuery({
+    queryKey: ["count", filterKey(filter)],
+    queryFn: () => api.countSamples(filter),
+    select: (d) => d.count,
+  });
+}
 
-      const pageOffsets: number[] = [];
-      for (let offset = items.length; offset < first.total; offset += PAGE_SIZE) {
-        pageOffsets.push(offset);
-      }
-      const pages = await Promise.all(pageOffsets.map((offset) => listSamples(offset, PAGE_SIZE)));
-      for (const page of pages) items = items.concat(page.items ?? []);
+export function useTagCounts(filter?: Filter) {
+  return useQuery({
+    queryKey: ["tagCounts", filterKey(filter)],
+    queryFn: () => api.getTagCounts(filter),
+    select: (d) => d.items,
+  });
+}
 
-      setSamples(items);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+export function useCommits() {
+  return useQuery({
+    queryKey: ["commits"],
+    queryFn: () => api.listCommits(0, 50),
+    select: (d) => d.items,
+  });
+}
 
-  useEffect(() => {
-    reload();
-  }, [reload]);
+export function useSchema() {
+  return useQuery({
+    queryKey: ["schema"],
+    queryFn: () => api.getSchema(),
+    select: (d) => d.fields,
+    staleTime: Infinity,
+  });
+}
 
-  const applyTagsLocally = useCallback((ops: TagOp[]) => {
-    setSamples((prev) =>
-      prev.map((sample) => {
-        const relevant = ops.filter((op) => op.sample_id === sample.id);
-        if (relevant.length === 0) return sample;
-        const tags = new Set(sample.tags);
-        for (const op of relevant) {
-          if (op.op === "add") tags.add(op.tag);
-          else tags.delete(op.tag);
-        }
-        return { ...sample, tags: Array.from(tags) };
-      }),
-    );
-  }, []);
+// useSampleChunks fetches only the chunk offsets a caller says it currently needs (typically
+// derived from a virtualizer's visible range), and evicts the rest quickly via a short gcTime
+// — "distant chunks must be evictable" (architecture.md#frontend).
+export function useSampleChunks(filter: Filter | undefined, neededOffsets: number[]) {
+  const key = filterKey(filter);
+  const results = useQueries({
+    queries: neededOffsets.map((offset) => ({
+      queryKey: ["samples", key, offset],
+      queryFn: () => api.listSamples(filter, offset, CHUNK_SIZE),
+      staleTime: 30_000,
+      gcTime: 30_000,
+    })),
+  });
 
-  return { samples, loading, reload, applyTagsLocally };
+  return useMemo(() => {
+    const byOffset = new Map<number, Sample[]>();
+    neededOffsets.forEach((offset, i) => {
+      const data = results[i]?.data;
+      if (data) byOffset.set(offset, data.items);
+    });
+    return byOffset;
+  }, [results, neededOffsets]);
+}
+
+// invalidateSamples is called after a commit/undo job settles, so the grid, tag sidebar, and
+// count all reflect the new HEAD.
+export function useInvalidateAfterMutation() {
+  const client = useQueryClient();
+  return () => {
+    client.invalidateQueries({ queryKey: ["samples"] });
+    client.invalidateQueries({ queryKey: ["count"] });
+    client.invalidateQueries({ queryKey: ["tagCounts"] });
+    client.invalidateQueries({ queryKey: ["commits"] });
+  };
 }

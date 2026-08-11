@@ -1,119 +1,145 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import * as api from "./api/client";
 import CommitHistory from "./components/CommitHistory";
-import ImageGrid from "./components/ImageGrid";
+import FilterSidebar from "./components/FilterSidebar";
+import PixiGrid from "./components/Grid/PixiGrid";
 import Lightbox from "./components/Lightbox";
 import Toolbar from "./components/Toolbar";
-import { useSamples } from "./hooks/useSamples";
+import { useCommits, useInvalidateAfterMutation, useSampleCount } from "./hooks/useSamples";
 import { useSelection } from "./hooks/useSelection";
-import type { Commit, IndexStatus, TagOp } from "./types";
+import type { Filter, Job, Sample } from "./types";
 
 export default function App() {
-  const { samples, loading, reload, applyTagsLocally } = useSamples();
-  const { selected, toggle, selectRange, selectAll, clear } = useSelection();
-  const sampleIds = useMemo(() => samples.map((s) => s.id), [samples]);
+  const [activeTags, setActiveTags] = useState<string[]>([]);
+  const filter = useMemo<Filter | undefined>(() => {
+    if (activeTags.length === 0) return undefined;
+    return { stages: [{ type: "match", match: [{ field: "tags", op: "all", value: activeTags }] }] };
+  }, [activeTags]);
+
+  const { data: count = 0 } = useSampleCount(filter);
+  const { data: commits = [] } = useCommits();
+  const invalidate = useInvalidateAfterMutation();
+
+  const { selected, allMatching, toggle, selectRange, selectAllMatching, clear } = useSelection();
+  const [chunks, setChunks] = useState<Map<number, Sample[]>>(new Map());
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [folderPath, setFolderPath] = useState("");
+  const [indexJob, setIndexJob] = useState<Job | null>(null);
+
+  const orderedIds = useMemo(() => {
+    const ids: number[] = [];
+    for (const [offset, items] of chunks) items.forEach((s, i) => (ids[offset + i] = s.id));
+    return ids;
+  }, [chunks]);
 
   const handleSelect = useCallback(
     (id: number, index: number, shiftKey: boolean) => {
-      if (shiftKey) selectRange(sampleIds, index);
+      if (shiftKey) selectRange(orderedIds, index);
       else toggle(id, index);
     },
-    [sampleIds, selectRange, toggle],
+    [orderedIds, selectRange, toggle],
   );
 
-  const [folderPath, setFolderPath] = useState("");
-  const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
-  const [commits, setCommits] = useState<Commit[]>([]);
-  const pollRef = useRef<number | null>(null);
-
-  const reloadCommits = useCallback(async () => {
-    const res = await api.listCommits();
-    setCommits(res.items ?? []);
+  const toggleTag = useCallback((tag: string) => {
+    setActiveTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
   }, []);
-
-  useEffect(() => {
-    reloadCommits();
-  }, [reloadCommits]);
 
   const startIndex = useCallback(async () => {
     if (!folderPath.trim()) return;
-    await api.startIndex(folderPath.trim());
-    if (pollRef.current) window.clearInterval(pollRef.current);
-    pollRef.current = window.setInterval(async () => {
-      const status = await api.getIndexStatus();
-      setIndexStatus(status);
-      if (status.status === "done" || status.status === "error") {
-        if (pollRef.current) window.clearInterval(pollRef.current);
-        if (status.status === "done") reload();
-      }
-    }, 500);
-  }, [folderPath, reload]);
+    const { job_id } = await api.startIndex(folderPath.trim());
+    const job = await api.pollJob(job_id, setIndexJob);
+    setIndexJob(job);
+    if (job.status === "succeeded") invalidate();
+  }, [folderPath, invalidate]);
 
   const applyTag = useCallback(
     async (tag: string, op: "add" | "remove") => {
-      const ops: TagOp[] = Array.from(selected).map((sample_id) => ({ sample_id, tag, op }));
-      if (ops.length === 0) return;
-      await api.createCommit(`${op} "${tag}" on ${ops.length} sample(s)`, ops);
-      applyTagsLocally(ops);
-      await reloadCommits();
+      const selection = allMatching
+        ? { mode: "filter" as const, filter: filter ?? { stages: [] } }
+        : { mode: "explicit" as const, ids: Array.from(selected) };
+      if (selection.mode === "explicit" && selection.ids.length === 0) return;
+
+      setBusy(true);
+      try {
+        const { job_id } = await api.createSetCommit({
+          message: `${op} "${tag}"`,
+          kind: "set",
+          field: "tags",
+          selection,
+          op,
+          value: tag,
+        });
+        await api.pollJob(job_id);
+        invalidate();
+        clear();
+      } finally {
+        setBusy(false);
+      }
     },
-    [selected, applyTagsLocally, reloadCommits],
+    [allMatching, filter, selected, invalidate, clear],
   );
 
   const [undoing, setUndoing] = useState(false);
   const handleUndo = useCallback(async () => {
-    if (undoing) return;
+    const head = commits.find((c) => c.is_head);
+    if (!head || undoing) return;
     setUndoing(true);
     try {
-      await api.undo();
-      await Promise.all([reload(), reloadCommits()]);
-    } catch {
-      await reloadCommits();
+      const { job_id } = await api.undo(head.id);
+      await api.pollJob(job_id);
+      invalidate();
     } finally {
       setUndoing(false);
     }
-  }, [undoing, reload, reloadCommits]);
+  }, [commits, undoing, invalidate]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #ddd" }}>
+    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
+      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
         <strong>data777</strong>
         <input
           value={folderPath}
           onChange={(e) => setFolderPath(e.target.value)}
           placeholder="/absolute/path/to/image/folder"
-          style={{ flex: 1, padding: 4 }}
+          className="flex-1 rounded border border-white/10 bg-white/5 px-2 py-1 text-sm placeholder:text-neutral-500"
         />
-        <button onClick={startIndex}>Start indexing</button>
-        <span style={{ fontSize: 13, color: "#666" }}>
-          {indexStatus ? `${indexStatus.status} (${indexStatus.processed} indexed)` : ""}
-          {loading ? " · loading samples..." : ""}
-          {` · ${samples.length} total`}
+        <button onClick={startIndex} className="rounded bg-blue-600 px-2 py-1 text-xs text-white">
+          Start indexing
+        </button>
+        <span className="text-xs text-neutral-400">
+          {indexJob && indexJob.status !== "succeeded" && `${indexJob.status} (${indexJob.progress.processed} indexed)`}
+          {` · ${count} sample(s)`}
         </span>
       </div>
 
       <Toolbar
         selectedCount={selected.size}
-        totalCount={samples.length}
+        allMatching={allMatching}
+        matchingCount={count}
+        busy={busy}
         onApplyTag={(tag) => applyTag(tag, "add")}
         onRemoveTag={(tag) => applyTag(tag, "remove")}
-        onSelectAll={() => selectAll(sampleIds)}
+        onSelectAllMatching={selectAllMatching}
         onClearSelection={clear}
       />
 
-      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <ImageGrid samples={samples} selected={selected} onSelect={handleSelect} onOpenPreview={setPreviewIndex} />
+      <div className="flex min-h-0 flex-1">
+        <FilterSidebar activeTags={activeTags} onToggleTag={toggleTag} onClear={() => setActiveTags([])} />
+        <PixiGrid
+          filter={filter}
+          count={count}
+          selected={selected}
+          allMatching={allMatching}
+          onSelect={handleSelect}
+          onOpenPreview={setPreviewIndex}
+          onChunksUpdate={setChunks}
+        />
         <CommitHistory commits={commits} onUndo={handleUndo} undoing={undoing} />
       </div>
 
       {previewIndex !== null && (
-        <Lightbox
-          samples={samples}
-          index={previewIndex}
-          onClose={() => setPreviewIndex(null)}
-          onNavigate={setPreviewIndex}
-        />
+        <Lightbox chunks={chunks} count={count} index={previewIndex} onClose={() => setPreviewIndex(null)} onNavigate={setPreviewIndex} />
       )}
     </div>
   );

@@ -1,12 +1,22 @@
 # Open Structural Work
 
-What the architecture does not yet cover, ordered by how expensive it gets to add later.
+What the architecture did not yet cover, as of 2026-08-10, ordered by how expensive it gets
+to add later. As of 2026-08-11 all seven items are resolved *as contracts* — see each entry
+below and [api.md](api.md) / [architecture.md](architecture.md) / [plugins.md](plugins.md) /
+[sdk.md](sdk.md) for the settled shapes.
 
 This list came out of comparing data777 against projects that solved similar problems —
 FiftyOne, LightlyStudio, Rerun, CVAT, and the lakeFS/DVC line of data versioning tools.
-Items marked **structural** change contracts that other code will be built on, so they are
+Items marked **structural** changed contracts that other code will be built on, so they were
 cheapest to settle before the UI exists. Items marked **additive** extend the contract
-without breaking it and can wait.
+without breaking it and could wait — all of them are now settled anyway, since nothing here
+turned out to be expensive enough to defer once reached.
+
+**None of this is implemented in Go or React yet.** The code in `internal/` and `web/`
+still reflects the tags-only MVP from before 2026-08-10 (sync commits, no jobs, no typed
+fields, `react-window`). This document tracks contract gaps, not implementation status —
+implementing the v2 contracts against the still-running MVP is the next phase of work, not
+covered here.
 
 ---
 
@@ -91,14 +101,19 @@ become [operators](plugins.md) (item 2) that search and then write `set` commits
 why item 2 needed to land first. Bolting workflow-specific verbs onto the filter language
 itself was the tempting shortcut avoided here.
 
-## 5. `Filter` should grow into a view pipeline — *additive*
+## 5. `Filter` should grow into a view pipeline — *resolved 2026-08-11*
 
 "Pick 10,000 samples, balanced across classes, for the labeling budget" is not a filter.
 A filter selects by condition; this selects by sampling policy. FiftyOne chains stages —
 match, sort, sample, group, limit — each transforming a view.
 
-This can wait because the existing flat filter becomes the first stage of a pipeline
-without breaking anything: `{"stages": [{"type": "filter", …}]}`.
+Addressed in [api.md](api.md#view-pipeline): `filter` now accepts either the existing flat
+shape or an ordered `stages` list (`match`, `sort`, `sample` with optional class balancing;
+`group` reserved for when sequence work starts). The old flat shape is exactly
+`{"stages": [{"type": "match", ...}, {"type": "sort", ...}]}`, so nothing that already calls
+`/api/samples` needs to change. The one real design question — pagination over a
+non-deterministic `sample` stage — is settled with an explicit, client-echoed `seed` so page
+2 of a sampled view draws from the same draw as page 1.
 
 ## 6. No job model — *resolved 2026-08-10*
 
@@ -130,7 +145,7 @@ accidentally.
 Worth noting that FiftyOne sells orchestration in its enterprise tier, so this is a gap
 data777 fills for free.
 
-## 7. The versioning boundary is not written down — *additive*
+## 7. The versioning boundary is not written down — *resolved 2026-08-11*
 
 data777 versions **what you said about the data** — tags, labels, curation decisions — not
 the data itself. Media files are referenced by path and treated as immutable.
@@ -140,8 +155,9 @@ image, can I restore it from a commit?" Answering yes means storing image conten
 reimplementing lakeFS or DVC, along with terabytes of file history. Anyone who needs file
 versioning should run lakeFS underneath and point data777 at a branch.
 
-An explicit "what this project does not do" section prevents contributors from building the
-wrong thing.
+Addressed in [architecture.md](architecture.md#what-data777-does-not-version): an explicit
+section stating the boundary and the reasoning, so "can I restore a deleted file from a
+commit" has a settled, written answer (no) before a contributor starts building toward yes.
 
 ---
 
@@ -156,5 +172,11 @@ wrong thing.
    [api.md](api.md#fields) and [architecture.md](architecture.md#data-layers)
 5. ~~API additions for SDK access patterns, and the SDK itself (item 1)~~ — done, see
    [sdk.md](sdk.md)
-6. View pipeline and the "does not do" section (items 5, 7) — independent of everything above,
-   can happen anytime; the only two left
+6. ~~View pipeline and the "does not do" section (items 5, 7)~~ — done, see
+   [api.md](api.md#view-pipeline) and [architecture.md](architecture.md#what-data777-does-not-version)
+
+All seven items are resolved as contracts. What is not yet true: none of it exists in the Go
+server or the React frontend, which still run the pre-2026-08-10 tags-only MVP. The next
+phase is implementing the v2 contracts in code — a much larger effort than the design work
+above, and one that should follow the [dev-environment split](../CLAUDE.md#개발-환경-머신별-역할-분리)
+(Go/storage on a desktop, frontend/UI on the MacBook) rather than being done in one session.

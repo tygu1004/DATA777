@@ -212,6 +212,49 @@ per-field keys into a uniform predicate.
 parameter. Clients should serialize with sorted keys so that the same logical filter always
 produces the same string, which keeps HTTP caching effective.
 
+### View pipeline
+
+A `Filter` answers "which samples satisfy a condition." It cannot answer "10,000 samples,
+balanced across classes, for a labeling budget" — that is a sampling policy over the whole
+matching set's distribution, not a predicate any single sample passes or fails.
+
+`filter` therefore accepts either the flat shape above, or a `stages` pipeline — an ordered
+list, each stage transforming the view the previous one produced:
+
+```jsonc
+{ "stages": [
+    { "type": "match", "match": [ { "field": "tags", "op": "all", "value": ["unlabeled"] } ] },
+    { "type": "sample", "size": 10000, "balance": { "field": "predictions.label" } },
+    { "type": "sort", "sort": { "field": "id", "dir": "asc" } }
+] }
+```
+
+| type | does |
+|---|---|
+| `match` | the existing predicate list — the only stage kind that existed before this |
+| `sort` | the existing `sort`, pulled out into its own stage so it can run after `sample` |
+| `sample` | reduce to `size` samples; with `balance`, draw as close to an equal quota per distinct value of a `scalar` or single-valued `tags` field as the matched set allows. `balance` on a `labels` field is undefined — a sample can carry several label objects, so there is no one value to balance against. |
+| `group` | *(reserved, not implemented)* group by a field, e.g. `sequence_id` — ties into the episode/sequence modeling in [architecture.md](architecture.md#data-layers); deferred until sequence work starts |
+
+A flat `{"match": [...], "sort": {...}}` is exactly `{"stages": [{"type": "match", ...}, {"type": "sort", ...}]}`
+— existing requests keep working unchanged, since the old shape is shorthand for the new one
+rather than something the new one replaces.
+
+**`sample` and pagination.** Every other stage is deterministic from its inputs, so paging
+through it with `offset`/`cursor` behaves the way [`GET /api/samples`](#get-apisamples)
+already documents. Random sampling is not deterministic by default, which would make page 2
+of a `sample` result draw from a different random set than page 1. A pipeline containing
+`sample` therefore carries a `seed`: a client may supply one, and if it omits one the server
+generates it and returns it in the response envelope, so the client echoes it back on every
+subsequent page of the same view. Two requests with the same pipeline and the same `seed`
+against the same `at_commit` always draw the same 10,000 samples, in the same order.
+
+A pipeline result pages through the same `/api/samples` contract a plain `Filter` does —
+this extends what a client can ask for, not where the answer comes from, so no new endpoint
+is introduced. Wherever this document says `Filter`, a `Selection` in `mode: "filter"`
+accepts the same generalized shape, so a labeling-budget sample can be tagged or exported
+exactly like any other view.
+
 ### Selection
 
 Describes a set of samples a mutation applies to.

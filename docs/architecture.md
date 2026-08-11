@@ -171,6 +171,27 @@ bulk tag is a single action.
 At target scale a commit stores *which rule was applied to which set* — a tag, an operation,
 and a roaring bitmap — never one row per affected sample.
 
+### What data777 does not version
+
+data777 versions **what you said about the data** — tags, labels, curation decisions. It
+does not version the data itself. A sample's `path` points at a media file that is treated
+as immutable and read-only; the commit log has no mechanism to store file content, so
+deleting or overwriting the file at that path is unrecoverable from within data777, no
+matter how far back the commit history goes.
+
+This is a deliberate boundary, not an oversight. Storing file content would mean
+reimplementing lakeFS or DVC — content-addressed blob storage, terabytes of history,
+garbage collection — inside a tool whose actual job is curation on top of files that already
+exist somewhere. Anyone who needs "can I get back the image I deleted last week" should run
+lakeFS (or DVC, or plain object versioning on the underlying bucket) underneath and point
+data777's `storage.Source` at a path or branch it manages. The two problems compose instead
+of one absorbing the other: lakeFS/DVC answer "what did this file look like," data777
+answers "what did we decide about it."
+
+Leaving this unstated invites contributors to answer "can I restore a deleted image from a
+commit" with yes and start building toward it. This section exists so the answer is settled
+before that work starts, not after.
+
 ## Rejected and deferred technologies
 
 Recorded so the same evaluations are not repeated.

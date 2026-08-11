@@ -1,9 +1,11 @@
 # Open Structural Work
 
-What the architecture did not yet cover, as of 2026-08-10, ordered by how expensive it gets
-to add later. As of 2026-08-11 all seven items are resolved *as contracts* — see each entry
-below and [api.md](api.md) / [architecture.md](architecture.md) / [plugins.md](plugins.md) /
-[sdk.md](sdk.md) for the settled shapes.
+What the architecture did not yet cover, ordered by how expensive it gets to add later.
+
+Items 1–7 were opened 2026-08-10 and are all resolved *as contracts* — see each entry below
+and [api.md](api.md) / [architecture.md](architecture.md) / [plugins.md](plugins.md) /
+[sdk.md](sdk.md) / [media.md](media.md) for the settled shapes. Items 8–10 were opened
+2026-08-11 by a review of those contracts against each other; **8 and 9 are still open.**
 
 This list came out of comparing data777 against projects that solved similar problems —
 FiftyOne, LightlyStudio, Rerun, CVAT, and the lakeFS/DVC line of data versioning tools.
@@ -161,6 +163,78 @@ commit" has a settled, written answer (no) before a contributor starts building 
 
 ---
 
+# Second round (opened 2026-08-11)
+
+Items 1–7 came from comparing data777 against other tools. Items 8–10 came from reviewing
+the resulting contracts against each other, which is a different exercise: each of these is a
+place where two settled decisions do not compose.
+
+## 8. A `Filter` spans storage engines that cannot join
+
+At scale-out, [architecture.md](architecture.md#data-layers) puts sample metadata in
+ClickHouse while tag bitmaps and label rows stay in SQLite/Postgres. But a single `Filter`
+mixes all three in one AND list:
+
+```jsonc
+{ "match": [
+    { "field": "width",       "op": "gte", "value": 1000 },     // ClickHouse
+    { "field": "tags",        "op": "all", "value": ["cat"] },  // bitmap store
+    { "field": "predictions", "op": "elem_match", "value": [] } // label rows
+] }
+```
+
+That is a cross-engine join. Intersecting a 100M-row ClickHouse result with a bitmap held in
+another process means moving 100M IDs between them — the same failure mode as the
+"1B-element array over the wire" this document's scale table already rejects. `offset`
+paging and `count` then run on top of that join, making it worse.
+
+The likely resolution is in the stack already chosen: **ClickHouse has native roaring bitmap
+support** (`AggregateFunction(groupBitmap, UInt64)`, `bitmapAnd`, `bitmapCardinality`), so
+tag state can live in both places — authoritative in the transactional store where commits
+write it, mirrored into ClickHouse so filters evaluate in one engine. Label rows want the
+same treatment, being read-mostly. Not yet designed; what is settled is that "each layer is
+independently replaceable" is not sufficient on its own, because queries cross the layers.
+
+**Structural** — it constrains what a `ClickHouseCatalog` can be, so it should be settled
+before one is written, not after.
+
+## 9. There is no dataset scope
+
+[api.md](api.md#fields) says label and embedding fields are declared "per dataset," but no
+dataset identifier appears in any endpoint, in the `Catalog` interface, or in the schema
+table. Today the whole server is one implicit dataset.
+
+Either that is the intent — in which case the phrase "per dataset" should go, and
+"one dataset per data directory" should be stated — or multiple datasets are wanted, in which
+case the scope belongs in the URL structure and in every table's key *now*. Retrofitting a
+scope through every endpoint and every stored row later is exactly the class of change this
+document exists to catch early.
+
+**Structural**, and unresolved pending a decision on which of the two it is.
+
+## 10. Video and sequences are absent from the contract — *resolved 2026-08-11*
+
+Video, multi-camera capture, and synchronized sensor sequences are core goals of the project
+and appeared nowhere in the contracts: `Sample` had no duration, no frame index, no timeline,
+no sequence identity, and the only mention was a reserved `group` pipeline stage. The spec
+described an image tool.
+
+Addressed in [media.md](media.md): five scalar fields (`media_type`, `parent_id`, `group_id`,
+`t`, `slice`), the reserved `group` stage specified as `rollup`, and one plugin manifest
+field (`media_handlers`) for media types the core does not decode. The load-bearing decision
+is that **a video frame is an ordinary sample rather than a nested subdocument** — the
+opposite of FiftyOne's model, and chosen because every data777 primitive is already keyed by
+`sample_id`, so frame-level tagging becomes a bitmap operation and frame-level label edits
+inherit version history for free. Frame count is bounded by stride sampling at index time
+(1fps default), and filmstrip generation reuses the atlas mechanism rather than adding one.
+
+**Left open by that resolution:** the synchronization tolerance for matching a moment across
+sensors is currently every client's own choice, and the root view's implicit `parent_id = 0`
+scoping is a cost paid continuously rather than once. Both recorded in
+[media.md](media.md#ongoing-costs).
+
+---
+
 ## Suggested order
 
 1. ~~Data model and filter generalization (item 3)~~ — done, see [api.md](api.md#fields)
@@ -175,8 +249,24 @@ commit" has a settled, written answer (no) before a contributor starts building 
 6. ~~View pipeline and the "does not do" section (items 5, 7)~~ — done, see
    [api.md](api.md#view-pipeline) and [architecture.md](architecture.md#what-data777-does-not-version)
 
-All seven items are resolved as contracts. What is not yet true: none of it exists in the Go
-server or the React frontend, which still run the pre-2026-08-10 tags-only MVP. The next
-phase is implementing the v2 contracts in code — a much larger effort than the design work
-above, and one that should follow the [dev-environment split](../CLAUDE.md#개발-환경-머신별-역할-분리)
-(Go/storage on a desktop, frontend/UI on the MacBook) rather than being done in one session.
+7. ~~Media and sequence model (item 10)~~ — done, see [media.md](media.md)
+8. **Dataset scope (item 9)** — open, and a decision rather than a design: one dataset per
+   data directory, or a scope through every endpoint and table
+9. **Cross-engine filter evaluation (item 8)** — open; constrains `ClickHouseCatalog`, so it
+   blocks that implementation and nothing before it
+
+Eight of ten items are resolved as contracts. What is not yet true: almost none of it exists
+in the Go server or the React frontend, which still run the pre-2026-08-10 tags-only MVP
+(`internal/catalog` is the first piece of v2 code and is incomplete). The next phase is
+implementing the v2 contracts, following the
+[dev-environment split](../CLAUDE.md#개발-환경-머신별-역할-분리) (Go/storage on a desktop,
+frontend/UI on the MacBook) rather than being done in one session.
+
+**Implement a thin vertical slice before specifying further.** The correctness error found in
+`set`-commit inversion on 2026-08-11 — undo removing a tag from samples that already carried
+it, because the stored bitmap was the matched set rather than the changed delta — survived
+five sessions of document review and would not have survived ten minutes of writing `Undo()`.
+The contracts are large on purpose, since the goal is to improve on FiftyOne rather than to
+meet a minimum; the risk that creates is not size but the absence of any implementation
+pushing back on them. One slice end to end — typed schema → `match` filter → `set` commit →
+job → undo — exercises more of this document than another design pass would.

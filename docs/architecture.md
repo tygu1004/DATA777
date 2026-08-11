@@ -249,6 +249,9 @@ directly onto a GPU texture atlas, so the transport and the renderer want the sa
 ## See also
 
 - [API contract](api.md) — the filter and selection descriptors, and the endpoints built on them.
+- [Media and sequence model](media.md) — video frames, synchronized multi-sensor capture, and
+  media types beyond images, expressed as scalar fields on the existing sample rather than a
+  parallel data model.
 - [Plugin contract](plugins.md) — operators and panels, run as external HTTP services rather
   than Go plugins, following the same optional-attachment pattern as the data layers above.
 - [Python SDK](sdk.md) — a thin client over the same API contract, not a second implementation.

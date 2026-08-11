@@ -84,6 +84,20 @@ What a plugin exposes to `GET {url}/data777-plugin.json`:
 Input schemas are JSON Schema rather than a custom type system, so the UI can use an
 off-the-shelf form renderer instead of one built for this project alone.
 
+A plugin may also declare `media_handlers`, which is how data777 supports media types its own
+binary cannot decode:
+
+```jsonc
+{ "media_handlers": [
+    { "media_type": "point_cloud", "extensions": [".pcd", ".ply"] }
+] }
+```
+
+data777 calls `POST {url}/thumbnail` with a sample when it needs a preview for that media
+type. The core decodes images and video; everything else attaches. Combined with a
+`sample-detail` panel for the viewer and a declared label `type` for the geometry, that is
+the whole cost of adding a modality — see [media.md](media.md#other-media-types).
+
 `selection` covers both per-sample actions (`required`, e.g. "tag these as blurry") and
 dataset-level ones (`none`, e.g. "resync from S3") through the same mechanism, rather than
 needing a second extension kind for the latter.

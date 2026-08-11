@@ -44,7 +44,7 @@ storage side.
 
 | Kind | Examples | Storage | Mutated by |
 |---|---|---|---|
-| `scalar` | `width`, `height`, `filesize`, `format`, `filename` | fixed, written once at index time | never (re-index only) |
+| `scalar` | `width`, `height`, `filesize`, `format`, `filename`, and the media/sequence fields below | fixed, written once at index time | never (re-index only) |
 | `tags` | the `tags` field | roaring bitmap per tag | `set` commits |
 | `labels` | `ground_truth`, `predictions`, any dataset-defined name | list of typed label objects per sample | `patch` commits |
 | `embedding` | `clip_embedding`, any dataset-defined name | fixed-length float vector per sample, in a vector index | bulk upsert, **not commits** — see below |
@@ -76,6 +76,27 @@ dataset needs one, since mask storage is its own design question.
 // keypoints — a label plus an ordered list of normalized [x, y] points
 { "label": "person", "points": [[0.40, 0.10], [0.38, 0.22]], "confidence": 0.77 }
 ```
+
+### Media and sequence fields
+
+Seven further scalar fields address video frames, synchronized multi-sensor captures, and
+media types beyond images. They are ordinary scalars — no new predicate or endpoint is
+involved in querying them.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `media_type` | string | `image` \| `video` \| `frame` \| `point_cloud` \| `audio` |
+| `parent_id` | int | `0` for a root sample; otherwise the sample this was derived from (a frame → its video) |
+| `group_id` | int | `0` for none; otherwise the identity of a shared timeline |
+| `t` | float | position on that timeline, in seconds; `0` for a root image |
+| `slice` | string | which sensor within the group (`cam_left`, `lidar`); `""` when ungrouped |
+| `duration` | float | seconds; video and audio only, `0` otherwise |
+| `fps` | float | video only, `0` otherwise |
+
+**A video frame is an ordinary sample**, not a nested subdocument — so tags, labels,
+embeddings, `near` search, and `set`/`patch` commits all apply to frames with no additional
+machinery. See [media.md](media.md) for why that choice was made, how frame density is kept
+bounded, and what it costs.
 
 ### `GET /api/schema`
 
@@ -234,7 +255,7 @@ list, each stage transforming the view the previous one produced:
 | `match` | the existing predicate list — the only stage kind that existed before this |
 | `sort` | the existing `sort`, pulled out into its own stage so it can run after `sample` |
 | `sample` | reduce to `size` samples; with `balance`, draw as close to an equal quota per distinct value of a `scalar` or single-valued `tags` field as the matched set allows. `balance` on a `labels` field is undefined — a sample can carry several label objects, so there is no one value to balance against. |
-| `group` | *(reserved, not implemented)* group by a field, e.g. `sequence_id` — ties into the episode/sequence modeling in [architecture.md](architecture.md#data-layers); deferred until sequence work starts |
+| `rollup` | replace the view with the distinct samples named by a field: `{"type": "rollup", "by": "parent_id"}` turns a view of frames into the view of their parent videos. `by` accepts `parent_id`, `group_id`, or any scalar field. This is the stage previously reserved as `group`; see [media.md](media.md#rolling-frames-up-to-their-parent) |
 
 A flat `{"match": [...], "sort": {...}}` is exactly `{"stages": [{"type": "match", ...}, {"type": "sort", ...}]}`
 — existing requests keep working unchanged, since the old shape is shorthand for the new one
@@ -480,10 +501,24 @@ existed, so that undone commits disappear from the history as expected.
 is no parent commit — that check doesn't need a job, it's a lookup against the current HEAD.
 
 ```jsonc
+// request — expected_head is optional
+{ "expected_head": 12 }
+
 // GET /api/jobs/{id} once succeeded
 { "id": "job_1a2b3c", "kind": "undo", "status": "succeeded",
   "result": { "head_commit_id": 11 } }   // null once history is empty
 ```
+
+**`expected_head`, and why a single global HEAD needs this.** A client that omits it gets the
+pre-2026-08-11 behavior: undo whatever commit is at HEAD right now. That is a real bug under
+concurrent use, not a hypothetical — if A clicks undo right as B's commit lands, A's "undo my
+last action" can silently erase B's instead, and neither client has a way to know it happened
+(found in review, [roadmap.md](roadmap.md), while auditing this contract against itself). A
+client that tracks HEAD (the dashboard always does, from its last `/api/commits` read) should
+send it as `expected_head`; the server 409s with no mutation if HEAD has moved, exactly like
+the no-parent-commit case above rather than a new error shape. This is optimistic concurrency,
+not a redesign of undo into a revert-style commit — the latter would also buy redo and
+orphan-commit recovery but is a bigger change than closing this hole requires right now.
 
 For a `set` commit, undo applies the inverse of the bitmap that was stored *when the commit
 was made* — it does not recompute the original filter, so its cost does not depend on how
@@ -512,6 +547,12 @@ does not need a companion manifest.
 
 One HTTP request per thumbnail does not survive contact with the target scale. An atlas also
 maps one-to-one onto a GPU texture atlas, so transport and renderer want the same shape.
+
+A video's filmstrip is the same artifact: its stride frames extracted in one sequential decode
+at index time and packed into a single atlas, which then serves the grid's filmstrip preview,
+detail-view scrubbing, and that video's frame grid without seeking per frame. See
+[media.md](media.md#filmstrips-are-atlases). Generating them is a job (`kind: "thumbnail"`),
+for the same reasons indexing is.
 
 ### `POST /api/index`
 
@@ -629,6 +670,8 @@ operator author needs to know about, not an implementation detail this contract 
 | A full-dataset SDK walk paying `offset`'s O(offset) cost, or drifting under concurrent edits | `cursor`-based keyset pagination, stable independent of `offset`/mutations |
 | A training export disturbed by curation happening during the export | `at_commit` pins reads to a fixed point in history |
 | One HTTP request per thumbnail | `/api/atlas` batches a window into a single image |
+| One row (or document) per video frame | frames are stride-sampled samples, so frame tags are bitmaps and frame labels are versioned — [media.md](media.md#why-frames-are-samples-not-subdocuments) |
+| Seeking per frame to build a filmstrip | one sequential decode per video at index time, into the same atlas the grid already uses |
 
 **Not yet solved:** cheap, bulk-scale undo for a pipeline-driven overwrite of a non-tag
 scalar field. Flagged rather than silently assumed away — see the `patch` note above.

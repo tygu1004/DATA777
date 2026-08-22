@@ -24,6 +24,25 @@ class View:
     def count(self) -> int:
         return self._client.count(self.filter, at_commit=self.at_commit)
 
+    def to_hf_dataset(self, label_field: str | None = None) -> Any:
+        """Converts view to a Hugging Face Dataset object (requires `pip install datasets`)."""
+        from . import export as _export
+
+        return _export.to_hf_dataset(self, label_field=label_field)
+
+    def to_pytorch(
+        self,
+        transform: Any | None = None,
+        storage_prefix: str = "",
+        s3_client: Any | None = None,
+    ) -> Any:
+        """Returns a Zero-Copy Streaming PyTorch Dataset that pulls images on-the-fly from RustFS/S3."""
+        from .torch import StreamingDataset
+
+        return StreamingDataset(
+            self, transform=transform, storage_prefix=storage_prefix, s3_client=s3_client
+        )
+
     def export(self, format: str, path: str, label_field: str | None = None) -> None:
         """Client-side, not a server endpoint (docs/sdk.md#export-is-client-side-not-a-server-endpoint):
         format-specific serialization belongs in the layer that only needs the ordinary read
@@ -33,6 +52,10 @@ class View:
         exporters: dict[str, Any] = {
             "coco": _export.export_coco,
             "yolo": _export.export_yolo,
+            "label_studio": _export.export_label_studio,
+            "huggingface": _export.export_huggingface,
+            "hf": _export.export_huggingface,
+            "jsonl": _export.export_jsonl,
             "parquet": _export.export_parquet,
         }
         if format not in exporters:

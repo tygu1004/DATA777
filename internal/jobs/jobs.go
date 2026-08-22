@@ -103,6 +103,7 @@ func (m *Manager) Enqueue(ctx context.Context, kind string, run RunFunc) (*Job, 
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
+	snapshot := *job
 	m.mu.Lock()
 	m.live[job.ID] = job
 	m.cancel[job.ID] = cancel
@@ -110,7 +111,6 @@ func (m *Manager) Enqueue(ctx context.Context, kind string, run RunFunc) (*Job, 
 
 	go m.run(runCtx, job.ID, run)
 
-	snapshot := *job
 	return &snapshot, nil
 }
 

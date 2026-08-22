@@ -1,22 +1,54 @@
 import { useCallback, useMemo, useState } from "react";
 import * as api from "./api/client";
 import CommitHistory from "./components/CommitHistory";
+import ExportModal from "./components/ExportModal";
 import FilterSidebar from "./components/FilterSidebar";
 import PixiGrid from "./components/Grid/PixiGrid";
-import Lightbox from "./components/Lightbox";
-import Toolbar from "./components/Toolbar";
-import { useCommits, useInvalidateAfterMutation, useSampleCount } from "./hooks/useSamples";
+import Header from "./components/Header";
+import SampleModal from "./components/SampleModal";
+import Toolbar, { type GridSize } from "./components/Toolbar";
+import {
+  CHUNK_SIZE,
+  useCommits,
+  useInvalidateAfterMutation,
+  useSampleCount,
+  useSchema,
+  useTagCounts,
+} from "./hooks/useSamples";
 import { useSelection } from "./hooks/useSelection";
-import type { Filter, Job, Sample } from "./types";
+import type { Filter, Job, Predicate, Sample, Stage } from "./types";
 
 export default function App() {
   const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [predicates, setPredicates] = useState<Predicate[]>([]);
+  const [nearSample, setNearSample] = useState<number | null>(null);
+
+  // UI layout and view options
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [showHistory, setShowHistory] = useState(true);
+  const [gridSize, setGridSize] = useState<GridSize>("medium");
+  const [showLabels, setShowLabels] = useState(true);
+  const [showExport, setShowExport] = useState(false);
+
+  const { data: fields } = useSchema();
+  const { data: tags } = useTagCounts();
+  const embeddingField = useMemo(() => fields?.find((f) => f.kind === "embedding")?.name, [fields]);
+
   const filter = useMemo<Filter | undefined>(() => {
-    if (activeTags.length === 0) return undefined;
-    return { stages: [{ type: "match", match: [{ field: "tags", op: "all", value: activeTags }] }] };
-  }, [activeTags]);
+    const stages: Stage[] = [];
+    const match: Predicate[] = [];
+    if (activeTags.length > 0) match.push({ field: "tags", op: "all", value: activeTags });
+    match.push(...predicates);
+    if (match.length > 0) stages.push({ type: "match", match });
+    if (nearSample != null && embeddingField) {
+      stages.push({ type: "sort", sort: { near: { field: embeddingField, sample_id: nearSample } } });
+    }
+    if (stages.length === 0) return undefined;
+    return { stages };
+  }, [activeTags, predicates, nearSample, embeddingField]);
 
   const { data: count = 0 } = useSampleCount(filter);
+  const { data: totalCount = 0 } = useSampleCount(undefined);
   const { data: commits = [] } = useCommits();
   const invalidate = useInvalidateAfterMutation();
 
@@ -24,7 +56,7 @@ export default function App() {
   const [chunks, setChunks] = useState<Map<number, Sample[]>>(new Map());
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
-  const [folderPath, setFolderPath] = useState("");
+  const [folderPath, setFolderPath] = useState("./devdata");
   const [indexJob, setIndexJob] = useState<Job | null>(null);
 
   const orderedIds = useMemo(() => {
@@ -63,7 +95,7 @@ export default function App() {
       setBusy(true);
       try {
         const { job_id } = await api.createSetCommit({
-          message: `${op} "${tag}"`,
+          message: `${op === "add" ? "Add tag" : "Remove tag"} "${tag}"`,
           kind: "set",
           field: "tags",
           selection,
@@ -80,6 +112,27 @@ export default function App() {
     [allMatching, filter, selected, invalidate, clear],
   );
 
+  const handleSingleSampleTag = useCallback(
+    async (sampleId: number, tag: string, op: "add" | "remove") => {
+      setBusy(true);
+      try {
+        const { job_id } = await api.createSetCommit({
+          message: `${op === "add" ? "Add tag" : "Remove tag"} "${tag}" on sample #${sampleId}`,
+          kind: "set",
+          field: "tags",
+          selection: { mode: "explicit", ids: [sampleId] },
+          op,
+          value: tag,
+        });
+        await api.pollJob(job_id);
+        invalidate();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [invalidate],
+  );
+
   const [undoing, setUndoing] = useState(false);
   const handleUndo = useCallback(async () => {
     const head = commits.find((c) => c.is_head);
@@ -94,25 +147,32 @@ export default function App() {
     }
   }, [commits, undoing, invalidate]);
 
-  return (
-    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100">
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
-        <strong>data777</strong>
-        <input
-          value={folderPath}
-          onChange={(e) => setFolderPath(e.target.value)}
-          placeholder="/absolute/path/to/image/folder"
-          className="flex-1 rounded border border-white/10 bg-white/5 px-2 py-1 text-sm placeholder:text-neutral-500"
-        />
-        <button onClick={startIndex} className="rounded bg-blue-600 px-2 py-1 text-xs text-white">
-          Start indexing
-        </button>
-        <span className="text-xs text-neutral-400">
-          {indexJob && indexJob.status !== "succeeded" && `${indexJob.status} (${indexJob.progress.processed} indexed)`}
-          {` · ${count} sample(s)`}
-        </span>
-      </div>
+  const currentPreviewSample = useMemo(() => {
+    if (previewIndex === null) return undefined;
+    const chunkOffset = Math.floor(previewIndex / CHUNK_SIZE) * CHUNK_SIZE;
+    return chunks.get(chunkOffset)?.[previewIndex - chunkOffset];
+  }, [chunks, previewIndex]);
 
+  return (
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#090a0f] text-slate-100 font-sans select-none">
+      {/* Global Brand Header & Dataset Indexing Bar */}
+      <Header
+        folderPath={folderPath}
+        onFolderPathChange={setFolderPath}
+        onStartIndex={startIndex}
+        indexJob={indexJob}
+        totalCount={totalCount}
+        filteredCount={count}
+        hasFilter={filter !== undefined}
+        selectedCount={selected.size}
+        showSidebar={showSidebar}
+        onToggleSidebar={() => setShowSidebar((prev) => !prev)}
+        showHistory={showHistory}
+        onToggleHistory={() => setShowHistory((prev) => !prev)}
+        commitsCount={commits.length}
+      />
+
+      {/* Action Toolbar & Grid Controls */}
       <Toolbar
         selectedCount={selected.size}
         allMatching={allMatching}
@@ -122,10 +182,32 @@ export default function App() {
         onRemoveTag={(tag) => applyTag(tag, "remove")}
         onSelectAllMatching={selectAllMatching}
         onClearSelection={clear}
+        gridSize={gridSize}
+        onGridSizeChange={setGridSize}
+        showLabels={showLabels}
+        onToggleShowLabels={() => setShowLabels((prev) => !prev)}
+        popularTags={tags}
+        onOpenExport={() => setShowExport(true)}
       />
 
-      <div className="flex min-h-0 flex-1">
-        <FilterSidebar activeTags={activeTags} onToggleTag={toggleTag} onClear={() => setActiveTags([])} />
+      {/* Main Content Area */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* Left Filter Facets Sidebar */}
+        {showSidebar && (
+          <FilterSidebar
+            activeTags={activeTags}
+            onToggleTag={toggleTag}
+            onClear={() => setActiveTags([])}
+            predicates={predicates}
+            onAddPredicate={(p) => setPredicates((prev) => [...prev, p])}
+            onRemovePredicate={(i) => setPredicates((prev) => prev.filter((_, idx) => idx !== i))}
+            onClearPredicates={() => setPredicates([])}
+            nearSample={nearSample}
+            onClearNear={() => setNearSample(null)}
+          />
+        )}
+
+        {/* Center Pixi.js WebGPU Virtual Grid */}
         <PixiGrid
           filter={filter}
           count={count}
@@ -134,13 +216,47 @@ export default function App() {
           onSelect={handleSelect}
           onOpenPreview={setPreviewIndex}
           onChunksUpdate={setChunks}
+          canFindSimilar={!!embeddingField}
+          onFindSimilar={setNearSample}
+          gridSize={gridSize}
+          showLabels={showLabels}
         />
-        <CommitHistory commits={commits} onUndo={handleUndo} undoing={undoing} />
+
+        {/* Right Commit History & Git Timeline */}
+        {showHistory && (
+          <CommitHistory commits={commits} onUndo={handleUndo} undoing={undoing} />
+        )}
       </div>
 
+      {/* Sample Detail Inspector Modal */}
       {previewIndex !== null && (
-        <Lightbox chunks={chunks} count={count} index={previewIndex} onClose={() => setPreviewIndex(null)} onNavigate={setPreviewIndex} />
+        <SampleModal
+          chunks={chunks}
+          count={count}
+          index={previewIndex}
+          onClose={() => setPreviewIndex(null)}
+          onNavigate={setPreviewIndex}
+          selected={selected}
+          onToggleSelect={(id, idx) => handleSelect(id, idx, false)}
+          canFindSimilar={!!embeddingField}
+          onFindSimilar={setNearSample}
+          onApplyTag={(tag, op) => {
+            if (currentPreviewSample) {
+              handleSingleSampleTag(currentPreviewSample.id, tag, op);
+            }
+          }}
+        />
       )}
+
+      {/* Export Dataset Modal */}
+      <ExportModal
+        isOpen={showExport}
+        onClose={() => setShowExport(false)}
+        selectedIds={selected}
+        totalMatchingCount={count}
+        chunks={chunks}
+      />
     </div>
   );
 }
+

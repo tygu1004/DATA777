@@ -1,13 +1,12 @@
-"""COCO/YOLO/Parquet export — pure client-side transformation over the ordinary read API
-(docs/sdk.md#export-is-client-side-not-a-server-endpoint). Only detection-style label fields
-are supported for COCO/YOLO, since both formats are bounding-box formats by construction.
+"""COCO/YOLO/Label Studio/HuggingFace/Parquet/JSONL export — pure client-side transformation over the ordinary read API
+(docs/sdk.md#export-is-client-side-not-a-server-endpoint).
 """
 
 from __future__ import annotations
 
 import json
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .models import Detection
 
@@ -58,8 +57,134 @@ def export_coco(view: "View", path: str, label_field: str | None = None) -> None
         "categories": [{"id": i, "name": name} for name, i in categories.items()],
     }
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(coco, f)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(coco, f, indent=2)
+
+
+def export_label_studio(
+    view: "View", path: str, label_field: str | None = None, storage_prefix: str = ""
+) -> None:
+    """Exports samples to Label Studio Tasks format (.json) with pre-annotated bounding boxes and tags.
+    Supports S3/RustFS Zero-Copy storage prefix (e.g. 's3://my-bucket/')."""
+    tasks = []
+    field = label_field
+    prefix = storage_prefix.rstrip("/")
+
+    for sample in view.samples():
+        results = []
+
+        # Convert tags to choices
+        if sample.tags:
+            results.append({
+                "from_name": "tag",
+                "to_name": "image",
+                "type": "choices",
+                "value": {"choices": sample.tags},
+            })
+
+        # Convert detections to rectanglelabels
+        if field and field in sample.labels:
+            for i, val in enumerate(sample.labels[field]):
+                if not isinstance(val, Detection):
+                    continue
+                x, y, w, h = val.bbox
+                results.append({
+                    "id": f"result_{sample.id}_{i}",
+                    "from_name": "label",
+                    "to_name": "image",
+                    "type": "rectanglelabels",
+                    "original_width": sample.width,
+                    "original_height": sample.height,
+                    "image_rotation": 0,
+                    "value": {
+                        "rotation": 0,
+                        "x": x * 100,
+                        "y": y * 100,
+                        "width": w * 100,
+                        "height": h * 100,
+                        "rectanglelabels": [val.label],
+                    },
+                })
+
+        image_uri = f"{prefix}/{sample.path.lstrip('/')}" if prefix else sample.path
+        task = {
+            "id": sample.id,
+            "data": {
+                "image": image_uri,
+                "filename": sample.filename,
+                "width": sample.width,
+                "height": sample.height,
+                "filesize": sample.filesize,
+                "format": sample.format,
+            },
+            "annotations": [{"result": results}] if results else [],
+        }
+        tasks.append(task)
+
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(tasks, f, indent=2)
+
+
+def export_huggingface(
+    view: "View", path: str, label_field: str | None = None, storage_prefix: str = ""
+) -> None:
+    """Exports dataset to Hugging Face ImageFolder metadata format (metadata.jsonl).
+    Supports S3/RustFS Zero-Copy storage prefix (e.g. 's3://my-bucket/')."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    field = label_field
+    prefix = storage_prefix.rstrip("/")
+
+    with open(path, "w", encoding="utf-8") as f:
+        for sample in view.samples():
+            image_uri = f"{prefix}/{sample.path.lstrip('/')}" if prefix else sample.path
+            record: dict[str, Any] = {
+                "file_name": sample.filename,
+                "image_path": image_uri,
+                "width": sample.width,
+                "height": sample.height,
+                "tags": sample.tags,
+            }
+            if field and field in sample.labels:
+                bboxes = []
+                categories = []
+                for val in sample.labels[field]:
+                    if isinstance(val, Detection):
+                        bboxes.append([
+                            val.bbox[0] * sample.width,
+                            val.bbox[1] * sample.height,
+                            val.bbox[2] * sample.width,
+                            val.bbox[3] * sample.height,
+                        ])
+                        categories.append(val.label)
+                record["objects"] = {"bbox": bboxes, "category": categories}
+            f.write(json.dumps(record) + "\n")
+
+
+def to_hf_dataset(view: "View", label_field: str | None = None) -> Any:
+    """Converts the view directly into a Hugging Face datasets.Dataset object for model training or pushing to Hub."""
+    try:
+        from datasets import Dataset  # type: ignore[import-untyped]
+    except ImportError as e:
+        raise ImportError('Hugging Face datasets conversion needs datasets: pip install "datasets"') from e
+
+    records = []
+    field = label_field
+    for sample in view.samples():
+        rec: dict[str, Any] = {
+            "image": sample.path,
+            "filename": sample.filename,
+            "width": sample.width,
+            "height": sample.height,
+            "tags": sample.tags,
+        }
+        if field and field in sample.labels:
+            rec["objects"] = {
+                "bbox": [v.bbox for v in sample.labels[field] if isinstance(v, Detection)],
+                "category": [v.label for v in sample.labels[field] if isinstance(v, Detection)],
+            }
+        records.append(rec)
+    return Dataset.from_list(records)
 
 
 def export_yolo(view: "View", path: str, label_field: str | None = None) -> None:
@@ -67,14 +192,13 @@ def export_yolo(view: "View", path: str, label_field: str | None = None) -> None
     os.makedirs(path, exist_ok=True)
 
     categories: dict[str, int] = {}
-    # first pass: collect category names so classes.txt order is stable regardless of write order
     samples = list(view.samples())
     for sample in samples:
         for value in sample.labels.get(field, []):
             if isinstance(value, Detection) and value.label not in categories:
                 categories[value.label] = len(categories)
 
-    with open(os.path.join(path, "classes.txt"), "w") as f:
+    with open(os.path.join(path, "classes.txt"), "w", encoding="utf-8") as f:
         for name in categories:
             f.write(name + "\n")
 
@@ -87,8 +211,16 @@ def export_yolo(view: "View", path: str, label_field: str | None = None) -> None
             x, y, w, h = value.bbox
             cx, cy = x + w / 2, y + h / 2
             lines.append(f"{categories[value.label]} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-        with open(os.path.join(path, f"{stem}.txt"), "w") as f:
+        with open(os.path.join(path, f"{stem}.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
+
+
+def export_jsonl(view: "View", path: str) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for sample in view.samples():
+            line = sample.model_dump() if hasattr(sample, "model_dump") else sample.__dict__
+            f.write(json.dumps(line) + "\n")
 
 
 def export_parquet(view: "View", path: str, label_field: str | None = None) -> None:
